@@ -25,13 +25,13 @@ function getOverlayHTML() {
     }
 
     .now-playing {
-      background: linear-gradient(135deg, rgba(15, 15, 30, 0.92), rgba(30, 20, 60, 0.92));
-      border: 1px solid rgba(139, 92, 246, 0.4);
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid rgba(100, 100, 200, 0.25);
       border-radius: 12px;
       padding: 16px 20px;
       margin-bottom: 8px;
       backdrop-filter: blur(12px);
-      box-shadow: 0 0 30px rgba(139, 92, 246, 0.15), 0 4px 20px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
       opacity: 0;
       transform: translateX(40px);
       transition: opacity 0.5s ease, transform 0.5s ease;
@@ -46,7 +46,7 @@ function getOverlayHTML() {
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 2px;
-      color: #8b5cf6;
+      color: #6366f1;
       margin-bottom: 6px;
       font-weight: 600;
     }
@@ -54,8 +54,7 @@ function getOverlayHTML() {
     .now-playing .song {
       font-size: 16px;
       font-weight: 700;
-      color: #fff;
-      text-shadow: 0 0 15px rgba(139, 92, 246, 0.5);
+      color: #1a1a2e;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -63,17 +62,17 @@ function getOverlayHTML() {
 
     .now-playing .requester {
       font-size: 12px;
-      color: rgba(255, 255, 255, 0.5);
+      color: rgba(0, 0, 0, 0.45);
       margin-top: 4px;
     }
 
     .queue-container {
-      background: rgba(10, 10, 20, 0.85);
+      background: rgba(255, 255, 255, 0.90);
       border: 1px solid rgba(100, 100, 200, 0.2);
       border-radius: 12px;
       padding: 12px 16px;
       backdrop-filter: blur(12px);
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
       opacity: 0;
       transform: translateX(40px);
       transition: opacity 0.5s ease 0.1s, transform 0.5s ease 0.1s;
@@ -97,7 +96,7 @@ function getOverlayHTML() {
       display: flex;
       align-items: center;
       padding: 6px 0;
-      border-bottom: 1px solid rgba(100, 100, 200, 0.1);
+      border-bottom: 1px solid rgba(0, 0, 0, 0.08);
       opacity: 0;
       transform: translateX(20px);
       transition: opacity 0.3s ease, transform 0.3s ease;
@@ -126,7 +125,7 @@ function getOverlayHTML() {
 
     .queue-item .song-name {
       font-size: 13px;
-      color: #e0e0e0;
+      color: #1a1a2e;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -134,13 +133,13 @@ function getOverlayHTML() {
 
     .queue-item .req-by {
       font-size: 11px;
-      color: rgba(255, 255, 255, 0.35);
+      color: rgba(0, 0, 0, 0.4);
     }
 
     .guesses-bar {
       margin-top: 8px;
-      background: rgba(10, 10, 20, 0.85);
-      border: 1px solid rgba(100, 200, 100, 0.2);
+      background: rgba(255, 255, 255, 0.90);
+      border: 1px solid rgba(34, 197, 94, 0.25);
       border-radius: 12px;
       padding: 10px 16px;
       backdrop-filter: blur(12px);
@@ -158,7 +157,7 @@ function getOverlayHTML() {
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 2px;
-      color: #22c55e;
+      color: #16a34a;
       margin-bottom: 6px;
       font-weight: 600;
     }
@@ -170,16 +169,16 @@ function getOverlayHTML() {
     }
 
     .guess-chip {
-      background: rgba(34, 197, 94, 0.15);
+      background: rgba(34, 197, 94, 0.1);
       border: 1px solid rgba(34, 197, 94, 0.3);
       border-radius: 16px;
       padding: 2px 10px;
       font-size: 12px;
-      color: #a7f3d0;
+      color: #15803d;
     }
 
     .empty-queue {
-      color: rgba(255, 255, 255, 0.3);
+      color: rgba(0, 0, 0, 0.35);
       font-size: 12px;
       font-style: italic;
       padding: 4px 0;

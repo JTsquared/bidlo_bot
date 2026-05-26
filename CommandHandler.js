@@ -54,16 +54,10 @@ class CommandHandler {
       return this.sendMessage(channelId, `@${username} Usage: !request <artist> - <song> or !request <song>`);
     }
 
-    const localTitles = this.db.searchTitlesLocal(query);
-    const localArtists = this.db.searchArtistsLocal(query);
-
     let results = [];
 
-    if (localTitles.length > 0) {
-      results = localTitles.map((t) => ({ artist: '', title: t.name }));
-    }
-
-    if (results.length === 0 && this.cf) {
+    // Prefer live search when CustomsForge is connected
+    if (this.cf) {
       const cfResult = await this.cf.search(query);
 
       if (cfResult.authExpired) {
@@ -75,6 +69,14 @@ class CommandHandler {
       if (cfResult.results.length > 0) {
         const titleItems = cfResult.results.map((r) => ({ id: r.title, text: r.title }));
         this.db.cacheTitles(titleItems);
+      }
+    }
+
+    // Fall back to local cache if live search unavailable or returned nothing
+    if (results.length === 0) {
+      const localTitles = this.db.searchTitlesLocal(query);
+      if (localTitles.length > 0) {
+        results = localTitles.map((t) => ({ artist: '', title: t.name }));
       }
     }
 
