@@ -54,11 +54,10 @@ class BlazeAPI {
 
   async isChannelLive(channelId) {
     try {
-      const response = await fetch(`${this.baseUrl}/channels/${channelId}/info`, { method: 'GET', headers: this.getHeaders() });
+      const response = await fetch(`${this.baseUrl}/channels/${channelId}`, { method: 'GET', headers: this.getHeaders() });
       if (response.ok) {
         const result = await response.json();
         const data = result.data || result;
-        // Check multiple possible field names
         const isLive = data.isLive === true || data.is_live === true || data.streamingState === 'STREAMING';
         return isLive;
       }

@@ -265,6 +265,13 @@ class WebServer {
 
   <h2>Timed Messages</h2>
   <div id="timedMessages" class="card">
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+      <label style="color:#888;font-size:13px;">Interval:</label>
+      <input type="number" id="timedInterval" min="10" style="background:#222;border:1px solid #444;color:#fff;border-radius:8px;padding:6px 10px;width:80px;font-size:14px;" placeholder="600">
+      <span style="color:#888;font-size:13px;">seconds</span>
+      <button class="btn-sm" onclick="updateTimedInterval()">Update</button>
+      <span id="timedIntervalStatus" style="color:#888;font-size:12px;"></span>
+    </div>
     <div id="timedList"></div>
     <div class="add-form">
       <input type="text" id="newTimedMsg" placeholder="New timed message...">
@@ -338,6 +345,7 @@ class WebServer {
 
     async function loadTimedMessages() {
       var data = await api('/timed-messages');
+      document.getElementById('timedInterval').value = data.intervalSeconds || 600;
       var el = document.getElementById('timedList');
       if (data.messages.length === 0) {
         el.innerHTML = '<div class="empty">No timed messages</div>';
@@ -348,6 +356,14 @@ class WebServer {
             '<button class="btn-sm danger" onclick="deleteTimedMsg(' + m.id + ')">X</button></div>';
         }).join('');
       }
+    }
+
+    async function updateTimedInterval() {
+      var val = parseInt(document.getElementById('timedInterval').value);
+      if (isNaN(val) || val < 10) { alert('Minimum interval is 10 seconds'); return; }
+      await api('/timed-messages/interval', 'PUT', { seconds: val });
+      document.getElementById('timedIntervalStatus').textContent = 'Updated!';
+      setTimeout(function() { document.getElementById('timedIntervalStatus').textContent = ''; }, 2000);
     }
 
     async function addTimedMsg() {

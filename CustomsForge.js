@@ -50,9 +50,10 @@ class CustomsForge {
       titleQuery = parts.slice(1).join(' - ').trim();
     }
 
+    // Always search both artists and titles
     const [titleResult, artistResult] = await Promise.all([
       this.searchTitles(titleQuery),
-      artistQuery ? this.searchArtists(artistQuery) : Promise.resolve({ results: [], authExpired: false }),
+      this.searchArtists(artistQuery || query),
     ]);
 
     const authExpired = titleResult.authExpired || artistResult.authExpired;
@@ -60,27 +61,35 @@ class CustomsForge {
     const combined = [];
     const seen = new Set();
 
-    if (hasHyphen && artistResult.results.length > 0 && titleResult.results.length > 0) {
-      const artistNames = artistResult.results.map((a) => a.text.trim().toLowerCase());
+    if (titleResult.results.length > 0 && artistResult.results.length > 0) {
+      // Have both — pair artist names with title results
+      const matchedArtist = artistResult.results[0]?.text?.trim() || artistQuery || query;
       for (const title of titleResult.results) {
         const titleText = title.text?.trim() || String(title.id).trim();
         const key = titleText.toLowerCase();
         if (!seen.has(key)) {
           seen.add(key);
-          const matchedArtist = artistResult.results.find((a) => artistNames.includes(a.text.trim().toLowerCase()));
-          combined.push({
-            artist: matchedArtist ? matchedArtist.text.trim() : artistQuery,
-            title: titleText,
-          });
+          combined.push({ artist: matchedArtist, title: titleText });
         }
       }
-    } else {
+    } else if (titleResult.results.length > 0) {
+      // Only title matches
       for (const title of titleResult.results) {
         const titleText = title.text?.trim() || String(title.id).trim();
         const key = titleText.toLowerCase();
         if (!seen.has(key)) {
           seen.add(key);
           combined.push({ artist: '', title: titleText });
+        }
+      }
+    } else if (artistResult.results.length > 0 && !hasHyphen) {
+      // Only artist matches and no specific title — return artist names so user can refine
+      for (const artist of artistResult.results) {
+        const artistText = artist.text?.trim() || String(artist.id).trim();
+        const key = artistText.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          combined.push({ artist: artistText, title: '(use !request artist - song title)' });
         }
       }
     }

@@ -79,6 +79,10 @@ class BlazeWebSocket extends EventEmitter {
 
     this.socket.onAny((eventName, ...args) => {
       this.lastActivityTime = Date.now();
+      // DEBUG: log non-chat, non-pong events
+      if (!eventName.startsWith('channel_chat_') && eventName !== 'pong') {
+        console.log(`[WS Event] ${eventName}`, JSON.stringify(args).substring(0, 200));
+      }
       this.handleEvent(eventName, ...args);
     });
   }
@@ -136,7 +140,7 @@ class BlazeWebSocket extends EventEmitter {
     if (eventName && eventName.startsWith('channel_chat_')) {
       this.handleChannelChat(data);
     }
-    // channel_is_live_{channelId} — primary stream status event
+    // channel_is_live_{channelId} — stream status from room subscription
     if (eventName && eventName.startsWith('channel_is_live_')) {
       if (data?.isLive === true) {
         console.log(`Stream went live (event: ${eventName})`);
@@ -146,7 +150,7 @@ class BlazeWebSocket extends EventEmitter {
         this.emit('streamOffline', data);
       }
     }
-    // owner_streaming_state — backup signal
+    // owner_streaming_state — only fires for own channel
     if (eventName === 'owner_streaming_state') {
       if (data?.streamingState === 'STREAMING') {
         console.log('Stream went live (event: owner_streaming_state)');
@@ -154,6 +158,56 @@ class BlazeWebSocket extends EventEmitter {
       } else if (data?.streamingState === 'STOPPED') {
         console.log('Stream went offline (event: owner_streaming_state)');
         this.emit('streamOffline', data);
+      }
+    }
+    // Official Blaze EventSub
+    if (eventName === 'eventsub') {
+      if (data?.metadata?.messageType === 'session_welcome') {
+        this.eventSubSessionId = data.payload?.sessionId;
+        console.log(`EventSub session: ${this.eventSubSessionId}`);
+        this.subscribeToStreamEvents();
+      }
+      const subType = data?.metadata?.subscriptionType;
+      if (subType === 'stream.online' || subType === 'stream.offline') {
+        const isLive = subType === 'stream.online';
+        console.log(`Stream ${isLive ? 'went live' : 'went offline'} (event: eventsub/${subType})`);
+        if (isLive) this.emit('streamLive', data.payload);
+        else this.emit('streamOffline', data.payload);
+      }
+    }
+  }
+
+  async subscribeToStreamEvents() {
+    if (!this.eventSubSessionId) return;
+    const { authToken, visitorId, targetChannelId, channelId } = this.config;
+    const watchChannelId = targetChannelId || channelId;
+
+    for (const type of ['stream.online', 'stream.offline']) {
+      try {
+        const response = await fetch('https://api.blaze.stream/v1/events/subscriptions', {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
+            Cookie: `visitorId=${visitorId}; token=${authToken}`,
+            'Visitor-Id': visitorId,
+          },
+          body: JSON.stringify({
+            type,
+            version: '1',
+            sessionId: this.eventSubSessionId,
+            condition: { channelId: watchChannelId },
+          }),
+        });
+        if (response.ok) {
+          console.log(`EventSub subscribed: ${type}`);
+        } else {
+          const body = await response.text();
+          console.log(`EventSub subscribe failed for ${type} (${response.status}): ${body.substring(0, 100)}`);
+        }
+      } catch (error) {
+        console.log(`EventSub subscribe error for ${type}: ${error.message}`);
       }
     }
   }

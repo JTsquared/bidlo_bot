@@ -156,19 +156,28 @@ async function attemptReconnect() {
 }
 
 // --- Events ---
+const alwaysConnectCF = process.env.ALWAYS_CONNECT_CF === 'true';
+
 blazeWS.on('connected', async () => {
   console.log('Blaze connected - bot ready');
   timedMessages.start();
-  startLivePolling();
 
-  // Check if stream is already live on connect
-  const live = await blazeAPI.isChannelLive(targetChannelId);
-  if (live && !isStreamLive) {
+  if (alwaysConnectCF) {
+    console.log('ALWAYS_CONNECT_CF enabled — connecting to CustomsForge immediately');
     isStreamLive = true;
-    console.log('Stream is currently LIVE');
     await connectCustomsForge();
-  } else if (!live) {
-    console.log('Stream is currently offline — will connect to CustomsForge when stream goes live');
+  } else {
+    startLivePolling();
+
+    // Check if stream is already live on connect
+    const live = await blazeAPI.isChannelLive(targetChannelId);
+    if (live && !isStreamLive) {
+      isStreamLive = true;
+      console.log('Stream is currently LIVE');
+      await connectCustomsForge();
+    } else if (!live) {
+      console.log('Stream is currently offline — will connect to CustomsForge when stream goes live');
+    }
   }
 });
 
