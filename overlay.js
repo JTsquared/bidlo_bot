@@ -208,7 +208,7 @@ function getOverlayHTML() {
     var lastNPId = null;
     var lastQueueIds = '';
     var lastGuessCount = 0;
-    var basePath = window.location.pathname.replace(/\/overlay\/?$/, '');
+    var basePath = window.location.pathname.replace(/\\/overlay\\/?$/, '');
 
     async function poll() {
       try {
