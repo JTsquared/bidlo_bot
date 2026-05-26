@@ -79,10 +79,6 @@ class BlazeWebSocket extends EventEmitter {
 
     this.socket.onAny((eventName, ...args) => {
       this.lastActivityTime = Date.now();
-      // DEBUG: log non-chat, non-pong events
-      if (!eventName.startsWith('channel_chat_') && eventName !== 'pong') {
-        console.log(`[WS Event] ${eventName}`, JSON.stringify(args).substring(0, 200));
-      }
       this.handleEvent(eventName, ...args);
     });
   }
@@ -160,13 +156,15 @@ class BlazeWebSocket extends EventEmitter {
         this.emit('streamOffline', data);
       }
     }
-    // Official Blaze EventSub
+    // Official Blaze EventSub — listener for stream.online/stream.offline
     if (eventName === 'eventsub') {
-      if (data?.metadata?.messageType === 'session_welcome') {
-        this.eventSubSessionId = data.payload?.sessionId;
-        console.log(`EventSub session: ${this.eventSubSessionId}`);
-        this.subscribeToStreamEvents();
-      }
+      // TODO: uncomment subscribeToStreamEvents() call below once we have
+      // a proper App Access Token for the Blaze developer API.
+      // The session_welcome event gives us the sessionId needed for subscriptions.
+      // if (data?.metadata?.messageType === 'session_welcome') {
+      //   this.eventSubSessionId = data.payload?.sessionId;
+      //   this.subscribeToStreamEvents();
+      // }
       const subType = data?.metadata?.subscriptionType;
       if (subType === 'stream.online' || subType === 'stream.offline') {
         const isLive = subType === 'stream.online';
@@ -177,40 +175,34 @@ class BlazeWebSocket extends EventEmitter {
     }
   }
 
-  async subscribeToStreamEvents() {
-    if (!this.eventSubSessionId) return;
-    const { authToken, visitorId, targetChannelId, channelId } = this.config;
-    const watchChannelId = targetChannelId || channelId;
-
-    for (const type of ['stream.online', 'stream.offline']) {
-      try {
-        const response = await fetch('https://api.blaze.stream/v1/events/subscriptions', {
-          method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authToken}`,
-            Cookie: `visitorId=${visitorId}; token=${authToken}`,
-            'Visitor-Id': visitorId,
-          },
-          body: JSON.stringify({
-            type,
-            version: '1',
-            sessionId: this.eventSubSessionId,
-            condition: { channelId: watchChannelId },
-          }),
-        });
-        if (response.ok) {
-          console.log(`EventSub subscribed: ${type}`);
-        } else {
-          const body = await response.text();
-          console.log(`EventSub subscribe failed for ${type} (${response.status}): ${body.substring(0, 100)}`);
-        }
-      } catch (error) {
-        console.log(`EventSub subscribe error for ${type}: ${error.message}`);
-      }
-    }
-  }
+  // TODO: Enable once we have a Blaze App Access Token (register at dev.blaze.stream)
+  // The internal /bapi auth token doesn't work with the developer API (api.blaze.stream).
+  // Subscription endpoint: POST https://api.blaze.stream/v1/events/subscriptions
+  // Required: { type: 'stream.online', version: '1', sessionId, condition: { channelId } }
+  // Events: 'stream.online' and 'stream.offline' — delivered via 'eventsub' socket event
+  // async subscribeToStreamEvents() {
+  //   if (!this.eventSubSessionId) return;
+  //   const { authToken, visitorId, targetChannelId, channelId } = this.config;
+  //   const watchChannelId = targetChannelId || channelId;
+  //   for (const type of ['stream.online', 'stream.offline']) {
+  //     try {
+  //       const response = await fetch('https://api.blaze.stream/v1/events/subscriptions', {
+  //         method: 'POST',
+  //         headers: {
+  //           Accept: 'application/json',
+  //           'Content-Type': 'application/json',
+  //           Authorization: `Bearer ${authToken}`,  // Replace with App Access Token
+  //           'Visitor-Id': visitorId,
+  //         },
+  //         body: JSON.stringify({ type, version: '1', sessionId: this.eventSubSessionId, condition: { channelId: watchChannelId } }),
+  //       });
+  //       if (response.ok) console.log(`EventSub subscribed: ${type}`);
+  //       else console.log(`EventSub subscribe failed for ${type} (${response.status}): ${(await response.text()).substring(0, 100)}`);
+  //     } catch (error) {
+  //       console.log(`EventSub subscribe error for ${type}: ${error.message}`);
+  //     }
+  //   }
+  // }
 
   handleChannelChat(data) {
     if (!data) return;

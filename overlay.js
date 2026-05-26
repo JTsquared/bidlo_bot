@@ -208,10 +208,11 @@ function getOverlayHTML() {
     var lastNPId = null;
     var lastQueueIds = '';
     var lastGuessCount = 0;
+    var basePath = window.location.pathname.replace(/\/overlay\/?$/, '');
 
     async function poll() {
       try {
-        var res = await fetch('/api/overlay/data');
+        var res = await fetch(basePath + '/api/overlay/data');
         var data = await res.json();
 
         // Now Playing

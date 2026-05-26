@@ -280,10 +280,12 @@ class WebServer {
   </div>
 
   <script>
+    // Use relative URL so it works behind a reverse proxy sub-path
+    var basePath = window.location.pathname.replace(/\/$/, '');
     async function api(path, method, body) {
       const opts = { method: method || 'GET', headers: { 'Content-Type': 'application/json' } };
       if (body) opts.body = JSON.stringify(body);
-      const res = await fetch('/api' + path, opts);
+      const res = await fetch(basePath + '/api' + path, opts);
       return res.json();
     }
 
