@@ -1,5 +1,3 @@
-const CUSTOMSFORGE_BASE = 'https://ignition4.customsforge.com';
-
 class CustomsForge {
   constructor(playwrightAuth) {
     this.auth = playwrightAuth;
@@ -39,6 +37,16 @@ class CustomsForge {
     }
   }
 
+  async getArtistSongs(artistId, artistName) {
+    try {
+      const songs = await this.auth.getArtistSongs(artistId);
+      return songs.map((s) => ({ artist: artistName, title: s.title }));
+    } catch (error) {
+      console.error('CustomsForge artist songs error:', error.message);
+      return [];
+    }
+  }
+
   async search(query) {
     const hasHyphen = query.includes(' - ');
     let artistQuery = null;
@@ -58,12 +66,14 @@ class CustomsForge {
 
     const authExpired = titleResult.authExpired || artistResult.authExpired;
 
-    const combined = [];
-    const seen = new Set();
+    // If we have title results, combine with artist info
+    if (titleResult.results.length > 0) {
+      const combined = [];
+      const seen = new Set();
+      const matchedArtist = artistResult.results.length > 0
+        ? artistResult.results[0].text?.trim()
+        : (artistQuery || '');
 
-    if (titleResult.results.length > 0 && artistResult.results.length > 0) {
-      // Have both — pair artist names with title results
-      const matchedArtist = artistResult.results[0]?.text?.trim() || artistQuery || query;
       for (const title of titleResult.results) {
         const titleText = title.text?.trim() || String(title.id).trim();
         const key = titleText.toLowerCase();
@@ -72,29 +82,30 @@ class CustomsForge {
           combined.push({ artist: matchedArtist, title: titleText });
         }
       }
-    } else if (titleResult.results.length > 0) {
-      // Only title matches
-      for (const title of titleResult.results) {
-        const titleText = title.text?.trim() || String(title.id).trim();
-        const key = titleText.toLowerCase();
-        if (!seen.has(key)) {
-          seen.add(key);
-          combined.push({ artist: '', title: titleText });
-        }
-      }
-    } else if (artistResult.results.length > 0 && !hasHyphen) {
-      // Only artist matches and no specific title — return artist names so user can refine
-      for (const artist of artistResult.results) {
-        const artistText = artist.text?.trim() || String(artist.id).trim();
-        const key = artistText.toLowerCase();
-        if (!seen.has(key)) {
-          seen.add(key);
-          combined.push({ artist: artistText, title: '(use !request artist - song title)' });
+      return { results: combined, authExpired };
+    }
+
+    // No title results — if we matched an artist, fetch their full song list
+    if (artistResult.results.length > 0) {
+      // Find the best matching artist (exact match preferred)
+      const queryLower = (artistQuery || query).toLowerCase();
+      const exactMatch = artistResult.results.find(
+        (a) => a.text?.trim().toLowerCase() === queryLower
+      );
+      const artist = exactMatch || artistResult.results[0];
+      const artistName = artist.text?.trim();
+      const artistId = artist.id;
+
+      if (artistId) {
+        console.log(`Fetching songs for artist: ${artistName} (ID: ${artistId})`);
+        const songs = await this.getArtistSongs(artistId, artistName);
+        if (songs.length > 0) {
+          return { results: songs, authExpired: false };
         }
       }
     }
 
-    return { results: combined, authExpired };
+    return { results: [], authExpired };
   }
 
   async isAuthenticated() {

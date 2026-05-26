@@ -143,6 +143,38 @@ class PlaywrightAuth {
     }, urlPath);
   }
 
+  async getArtistSongs(artistId) {
+    if (!this.isLoggedIn) throw new Error('Not logged in');
+
+    // Navigate to artist page in a new tab to avoid disrupting the main page
+    const page = await this.context.newPage();
+    try {
+      await page.goto(`https://ignition4.customsforge.com/artist/${artistId}`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 15000,
+      });
+      await page.waitForTimeout(3000);
+
+      const songs = await page.evaluate(() => {
+        const rows = document.querySelectorAll('table tbody tr');
+        return Array.from(rows).map(row => {
+          const cells = row.querySelectorAll('td');
+          if (cells.length >= 2) {
+            return {
+              title: (cells[0]?.textContent || '').trim(),
+              album: (cells[1]?.textContent || '').trim(),
+            };
+          }
+          return null;
+        }).filter(Boolean);
+      });
+
+      return songs;
+    } finally {
+      await page.close();
+    }
+  }
+
   async saveState() {
     try {
       const state = await this.context.storageState();
