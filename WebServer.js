@@ -2,10 +2,11 @@ const http = require('http');
 const { getOverlayHTML } = require('./overlay.js');
 
 class WebServer {
-  constructor(db, timedMessages, rsPlaylist, port = 3000) {
+  constructor(db, timedMessages, rsPlaylist, chatManager, port = 3000) {
     this.db = db;
     this.timedMessages = timedMessages;
     this.rs = rsPlaylist;
+    this.chatManager = chatManager;
     this.port = port;
     this.server = null;
   }
@@ -37,6 +38,12 @@ class WebServer {
     if (url.pathname === '/overlay') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(getOverlayHTML());
+      return;
+    }
+
+    if (url.pathname === '/chat-overlay') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(this.getChatOverlayHTML());
       return;
     }
 
@@ -140,6 +147,12 @@ class WebServer {
         return sendJSON(200, this.db.getStats());
       }
 
+      // GET /api/chat?since=timestamp — get unified chat messages
+      if (url.pathname === '/api/chat' && req.method === 'GET') {
+        const since = parseInt(url.searchParams.get('since')) || 0;
+        return sendJSON(200, { messages: this.chatManager.getMessages(since) });
+      }
+
       // GET /api/search?q=query — search RS Playlist (for download modal)
       if (url.pathname === '/api/search' && req.method === 'GET') {
         const q = url.searchParams.get('q');
@@ -221,7 +234,10 @@ class WebServer {
   <title>Bidlo Bot - Dashboard</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f0f; color: #e0e0e0; padding: 20px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f0f; color: #e0e0e0; padding: 20px; margin: 0; }
+    .page-layout { display: flex; gap: 20px; }
+    .left-col { flex: 1; min-width: 0; }
+    .right-col { flex: 1; min-width: 0; position: sticky; top: 20px; align-self: flex-start; }
     h1 { color: #a78bfa; margin-bottom: 20px; }
     h2 { color: #8b5cf6; margin: 20px 0 10px; font-size: 18px; }
     .card { background: #1a1a2e; border: 1px solid #333; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
@@ -282,10 +298,21 @@ class WebServer {
     .timed-msg .text { flex: 1; color: #ccc; }
     .add-form { display: flex; gap: 8px; margin-top: 8px; }
     .add-form input { flex: 1; background: #222; border: 1px solid #444; color: #fff; border-radius: 8px; padding: 8px 12px; font-size: 14px; }
+    .chat-box { height: calc(100vh - 120px); overflow-y: auto; display: flex; flex-direction: column; }
+    .chat-msg { padding: 6px 0; border-bottom: 1px solid #1a1a2e; display: flex; gap: 8px; align-items: flex-start; }
+    .chat-msg:last-child { border-bottom: none; }
+    .chat-platform { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; margin-top: 2px; }
+    .chat-platform.blaze { background: #6366f1; color: #fff; }
+    .chat-platform.arena { background: #f97316; color: #fff; }
+    .chat-user { font-weight: 700; color: #a78bfa; }
+    .chat-text { color: #ccc; }
+    .chat-host { color: #f59e0b; }
   </style>
 </head>
 <body>
   <h1>Bidlo Bot</h1>
+  <div class="page-layout">
+    <div class="left-col">
 
   <div id="nowPlaying" class="card now-playing">
     <div class="song">Nothing playing</div>
@@ -326,6 +353,15 @@ class WebServer {
       <button onclick="addTimedMsg()">Add</button>
     </div>
   </div>
+
+    </div><!-- end left-col -->
+    <div class="right-col">
+      <h2>Unified Chat</h2>
+      <div id="chatSection" class="card">
+        <div id="chatBox" class="chat-box"><div class="empty">No messages yet</div></div>
+      </div>
+    </div><!-- end right-col -->
+  </div><!-- end page-layout -->
 
   <div class="modal-overlay" id="dlModal">
     <div class="modal">
@@ -497,10 +533,88 @@ class WebServer {
       if (e.target === this) closeDownloadModal();
     });
 
+    var lastChatTimestamp = 0;
+    async function loadChat() {
+      var data = await api('/chat?since=' + lastChatTimestamp);
+      var box = document.getElementById('chatBox');
+      if (data.messages && data.messages.length > 0) {
+        if (lastChatTimestamp === 0) box.innerHTML = '';
+        data.messages.forEach(function(m) {
+          var div = document.createElement('div');
+          div.className = 'chat-msg';
+          var roleClass = m.role === 'HOST' ? ' chat-host' : '';
+          div.innerHTML = '<span class="chat-platform ' + m.platform + '">' + m.platform.toUpperCase() + '</span>' +
+            '<span><span class="chat-user' + roleClass + '">' + m.username + ':</span> <span class="chat-text">' + m.text + '</span></span>';
+          box.appendChild(div);
+          if (m.timestamp > lastChatTimestamp) lastChatTimestamp = m.timestamp;
+        });
+        box.scrollTop = box.scrollHeight;
+      }
+    }
+
     setInterval(refresh, 3000);
+    setInterval(loadChat, 2000);
     refresh();
+    loadChat();
     loadTimedMessages();
   </script>
+</body>
+</html>`;
+  }
+
+  getChatOverlayHTML() {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Chat Overlay</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: transparent; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .chat-container { position: absolute; bottom: 0; left: 0; width: 100%; max-height: 100vh; display: flex; flex-direction: column; justify-content: flex-end; padding: 10px; }
+    .chat-msg { background: rgba(0,0,0,0.6); border-radius: 10px; padding: 10px 18px; margin-top: 6px; display: flex; gap: 12px; align-items: center; backdrop-filter: blur(4px); animation: fadeIn 0.3s ease; }
+    .chat-msg.fade-out { opacity: 0; transition: opacity 1s ease; }
+    .platform-badge { font-size: 14px; font-weight: 800; padding: 4px 8px; border-radius: 4px; text-transform: uppercase; flex-shrink: 0; }
+    .platform-badge.blaze { background: #6366f1; color: #fff; }
+    .platform-badge.arena { background: #f97316; color: #fff; }
+    .username { font-weight: 700; color: #a78bfa; font-size: 28px; }
+    .username.host { color: #f59e0b; }
+    .text { color: #fff; font-size: 28px; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body>
+  <div class="chat-container" id="chatContainer"></div>
+  <script>
+    var basePath = window.location.pathname.replace(/\\/chat-overlay\\/?$/, '');
+    var lastTimestamp = 0;
+    var MSG_LIFETIME = 30000;
+
+    async function poll() {
+      try {
+        var res = await fetch(basePath + '/api/chat?since=' + lastTimestamp);
+        var data = await res.json();
+        var container = document.getElementById('chatContainer');
+
+        (data.messages || []).forEach(function(m) {
+          if (m.timestamp > lastTimestamp) lastTimestamp = m.timestamp;
+          var div = document.createElement('div');
+          div.className = 'chat-msg';
+          var hostClass = m.role === 'HOST' ? ' host' : '';
+          div.innerHTML = '<span class="platform-badge ' + m.platform + '">' + m.platform + '</span>' +
+            '<span class="username' + hostClass + '">' + m.username + '</span>' +
+            '<span class="text">' + m.text + '</span>';
+          container.appendChild(div);
+
+          setTimeout(function() { div.classList.add('fade-out'); }, MSG_LIFETIME - 1000);
+          setTimeout(function() { div.remove(); }, MSG_LIFETIME);
+        });
+      } catch (e) {}
+    }
+
+    setInterval(poll, 2000);
+    poll();
+  <\/script>
 </body>
 </html>`;
   }

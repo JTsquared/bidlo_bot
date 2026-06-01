@@ -4,9 +4,9 @@ const path = require('path');
 const MESSAGES_FILE = path.join(__dirname, 'timed_messages.json');
 
 class TimedMessages {
-  constructor(sendMessage, channelId) {
-    this.sendMessage = sendMessage;
-    this.channelId = channelId;
+  constructor(senders) {
+    // senders: array of { send: fn(message), name: string }
+    this.senders = Array.isArray(senders) ? senders : [{ send: senders, name: 'default' }];
     this.messages = [];
     this.intervalSeconds = 600;
     this.currentIndex = 0;
@@ -84,7 +84,13 @@ class TimedMessages {
 
     const msg = enabled[pickIndex];
     console.log(`Timed message: "${msg.message.substring(0, 50)}..."`);
-    await this.sendMessage(this.channelId, msg.message);
+    for (const sender of this.senders) {
+      try {
+        await sender.send(msg.message);
+      } catch (err) {
+        console.error(`Timed message send failed (${sender.name}):`, err.message);
+      }
+    }
 
     if (!this.randomize) {
       this.currentIndex = (pickIndex + 1) % enabled.length;

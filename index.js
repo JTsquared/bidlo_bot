@@ -2,6 +2,8 @@ require('dotenv').config();
 
 const BlazeAPI = require('./BlazeAPI.js');
 const BlazeWebSocket = require('./BlazeWebSocket.js');
+const ArenaChat = require('./ArenaChat.js');
+const ChatManager = require('./ChatManager.js');
 const SongDatabase = require('./Database.js');
 const RSPlaylist = require('./RSPlaylist.js');
 const CommandHandler = require('./CommandHandler.js');
@@ -33,19 +35,62 @@ const webPort = parseInt(process.env.WEB_PORT) || 3000;
 const db = new SongDatabase();
 const rsChannel = process.env.RSPLAYLIST_CHANNEL || '';
 const rs = new RSPlaylist(rsChannel);
+const chatManager = new ChatManager();
+
+// Blaze
 const blazeAPI = new BlazeAPI(blazeConfig);
 const blazeWS = new BlazeWebSocket({ ...blazeConfig, targetChannelId }, blazeAPI);
 
-const sendMessage = (channelId, message) => blazeWS.sendChatMessage(channelId, message);
-const commandHandler = new CommandHandler(db, rs, sendMessage, streamerUsername);
-const timedMessages = new TimedMessages(sendMessage, targetChannelId);
-const webServer = new WebServer(db, timedMessages, rs, webPort);
+// Arena
+const arenaToken = process.env.ARENA_BEARER_TOKEN;
+const arenaHandle = process.env.ARENA_STREAMER_HANDLE;
+const arenaChat = (arenaToken && arenaHandle) ? new ArenaChat(arenaToken, arenaHandle) : null;
 
-// --- Chat handler ---
+// Blaze send function
+const sendBlaze = (channelId, message) => blazeWS.sendChatMessage(channelId, message);
+
+// Command handler — responds on whichever platform the command came from
+const commandHandler = new CommandHandler(db, rs, null, streamerUsername);
+
+const timedSenders = [
+  { send: (msg) => sendBlaze(targetChannelId, msg), name: 'blaze' },
+];
+if (arenaChat) {
+  timedSenders.push({ send: (msg) => arenaChat.sendMessage(msg), name: 'arena' });
+}
+const timedMessages = new TimedMessages(timedSenders);
+const webServer = new WebServer(db, timedMessages, rs, chatManager, webPort);
+
+// --- Chat handlers ---
+
+// Blaze chat
 blazeWS.on('chatMessage', (data) => {
   if (!data.text || !data.channelId) return;
+  console.log(`[Blaze Chat] ${data.username}: ${data.text}`);
+
+  chatManager.addMessage({
+    platform: 'blaze',
+    username: data.username,
+    userId: data.userId || data.userChannelId,
+    text: data.text,
+  });
+
+  // Set reply function to Blaze
+  commandHandler.sendMessage = (chId, msg) => sendBlaze(chId, msg);
   commandHandler.handle(data.username, data.userId || data.userChannelId, data.text, data.channelId);
 });
+
+// Arena chat
+if (arenaChat) {
+  arenaChat.on('chatMessage', (data) => {
+    console.log(`[Arena Chat] ${data.username}: ${data.text}`);
+    chatManager.addMessage(data);
+
+    // Set reply function to Arena
+    commandHandler.sendMessage = (chId, msg) => arenaChat.sendMessage(msg);
+    commandHandler.handle(data.username, data.userId, data.text, 'arena');
+  });
+}
 
 // --- Reconnection ---
 let reconnectAttempts = 0;
@@ -104,16 +149,30 @@ async function main() {
 
   webServer.start();
 
+  // Connect Blaze
   try {
     await blazeWS.connect();
     console.log(`Connected to Blaze — streamer: ${streamerUsername}`);
-    console.log(`Web UI: http://localhost:${webPort}`);
-    console.log(`OBS Overlay: http://localhost:${webPort}/overlay`);
   } catch (error) {
-    console.error('Initial connection failed:', error.message);
-    console.log('Web UI is still available — the bot will retry connecting');
+    console.error('Blaze connection failed:', error.message);
     attemptReconnect();
   }
+
+  // Connect Arena
+  if (arenaChat) {
+    const arenaOk = await arenaChat.connect();
+    if (arenaOk) {
+      console.log('Connected to Arena');
+    } else {
+      console.warn('Arena: connection failed (streamer may not be live)');
+    }
+  } else {
+    console.log('Arena: not configured (set ARENA_BEARER_TOKEN and ARENA_STREAMER_HANDLE in .env)');
+  }
+
+  console.log(`Web UI: http://localhost:${webPort}`);
+  console.log(`OBS Overlay: http://localhost:${webPort}/overlay`);
+  console.log(`Chat Overlay: http://localhost:${webPort}/chat-overlay`);
 }
 
 // Graceful shutdown
@@ -121,6 +180,7 @@ function shutdown() {
   console.log('\nShutting down...');
   timedMessages.stop();
   blazeWS.disconnect();
+  if (arenaChat) arenaChat.disconnect();
   webServer.stop();
   db.close();
   process.exit(0);
