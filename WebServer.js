@@ -147,6 +147,13 @@ class WebServer {
         return sendJSON(200, this.db.getStats());
       }
 
+      // GET /api/giveaway — get current week's giveaway entries
+      if (url.pathname === '/api/giveaway' && req.method === 'GET') {
+        const SongDatabase = require('./Database.js');
+        const entries = this.db.getGiveawayEntries(SongDatabase.getCurrentWeekStart());
+        return sendJSON(200, { entries, weekStart: SongDatabase.getCurrentWeekStart() });
+      }
+
       // GET /api/chat?since=timestamp — get unified chat messages
       if (url.pathname === '/api/chat' && req.method === 'GET') {
         const since = parseInt(url.searchParams.get('since')) || 0;
@@ -571,7 +578,7 @@ class WebServer {
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: transparent; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    .chat-container { position: absolute; bottom: 0; left: 0; width: 100%; max-height: 100vh; display: flex; flex-direction: column; justify-content: flex-end; padding: 10px; }
+    .chat-container { position: absolute; bottom: 0; left: 0; width: 100%; display: flex; flex-direction: column; justify-content: flex-end; padding: 10px; }
     .chat-msg { background: rgba(0,0,0,0.6); border-radius: 10px; padding: 10px 18px; margin-top: 6px; display: flex; gap: 12px; align-items: center; backdrop-filter: blur(4px); animation: fadeIn 0.3s ease; }
     .chat-msg.fade-out { opacity: 0; transition: opacity 1s ease; }
     .platform-badge { font-size: 14px; font-weight: 800; padding: 4px 8px; border-radius: 4px; text-transform: uppercase; flex-shrink: 0; }
@@ -605,6 +612,11 @@ class WebServer {
             '<span class="username' + hostClass + '">' + m.username + '</span>' +
             '<span class="text">' + m.text + '</span>';
           container.appendChild(div);
+
+          // Keep only 2 visible messages
+          while (container.children.length > 2) {
+            container.removeChild(container.firstChild);
+          }
 
           setTimeout(function() { div.classList.add('fade-out'); }, MSG_LIFETIME - 1000);
           setTimeout(function() { div.remove(); }, MSG_LIFETIME);

@@ -7,6 +7,7 @@ const ChatManager = require('./ChatManager.js');
 const SongDatabase = require('./Database.js');
 const RSPlaylist = require('./RSPlaylist.js');
 const CommandHandler = require('./CommandHandler.js');
+const SubscriberService = require('./SubscriberService.js');
 const WebServer = require('./WebServer.js');
 const TimedMessages = require('./TimedMessages.js');
 
@@ -49,8 +50,13 @@ const arenaChat = (arenaToken && arenaHandle) ? new ArenaChat(arenaToken, arenaH
 // Blaze send function
 const sendBlaze = (channelId, message) => blazeWS.sendChatMessage(channelId, message);
 
+// Subscriber service for giveaway entries (uses Blaze developer API)
+const blazeClientId = process.env.BLAZE_CLIENT_ID || '';
+const blazeClientSecret = process.env.BLAZE_CLIENT_SECRET || '';
+const subscriberService = new SubscriberService(blazeClientId, blazeClientSecret, targetChannelId);
+
 // Command handler — responds on whichever platform the command came from
-const commandHandler = new CommandHandler(db, rs, null, streamerUsername);
+const commandHandler = new CommandHandler(db, rs, null, streamerUsername, subscriberService);
 
 const timedSenders = [
   { send: (msg) => sendBlaze(targetChannelId, msg), name: 'blaze' },
@@ -146,6 +152,29 @@ async function main() {
   if (rsChannel) {
     await rs.loadOwnedSongs();
   }
+
+  // Clean up old giveaway entries on startup
+  db.clearOldGiveawayEntries();
+
+  // Schedule weekly giveaway reset at midnight UTC Monday
+  function scheduleWeeklyReset() {
+    const now = new Date();
+    const nextMonday = new Date(now);
+    const daysUntilMonday = (8 - now.getUTCDay()) % 7 || 7;
+    nextMonday.setUTCDate(now.getUTCDate() + daysUntilMonday);
+    nextMonday.setUTCHours(0, 0, 0, 0);
+    const msUntilReset = nextMonday.getTime() - now.getTime();
+    console.log(`Giveaway resets in ${Math.round(msUntilReset / 3600000)}h (Monday 00:00 UTC)`);
+    setTimeout(() => {
+      console.log('Giveaway: weekly reset');
+      db.clearOldGiveawayEntries();
+      scheduleWeeklyReset();
+    }, msUntilReset);
+  }
+  scheduleWeeklyReset();
+
+  // Load subscriber list
+  await subscriberService.refresh();
 
   webServer.start();
 

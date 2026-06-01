@@ -54,6 +54,17 @@ class SongDatabase {
         created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
         UNIQUE(username, queue_item_id)
       );
+
+      CREATE TABLE IF NOT EXISTS giveaway_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        user_id TEXT,
+        is_subscriber INTEGER NOT NULL DEFAULT 0,
+        entries INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+        week_start TEXT NOT NULL,
+        UNIQUE(username, week_start)
+      );
     `);
 
     // Migrate existing queue table to add new columns
@@ -81,7 +92,21 @@ class SongDatabase {
       clearAllGuesses: this.db.prepare(`DELETE FROM accuracy_guesses`),
       artistCount: this.db.prepare(`SELECT COUNT(*) as count FROM artists`),
       titleCount: this.db.prepare(`SELECT COUNT(*) as count FROM titles`),
+      addGiveawayEntry: this.db.prepare(`INSERT INTO giveaway_entries (username, user_id, is_subscriber, entries, week_start) VALUES (?, ?, ?, ?, ?) ON CONFLICT(username, week_start) DO UPDATE SET is_subscriber = excluded.is_subscriber, entries = giveaway_entries.entries`),
+      getGiveawayEntries: this.db.prepare(`SELECT * FROM giveaway_entries WHERE week_start = ? ORDER BY created_at ASC`),
+      clearGiveawayEntries: this.db.prepare(`DELETE FROM giveaway_entries WHERE week_start = ?`),
+      clearAllGiveawayEntries: this.db.prepare(`DELETE FROM giveaway_entries`),
     };
+  }
+
+  static getCurrentWeekStart() {
+    const now = new Date();
+    const day = now.getUTCDay();
+    const diff = day === 0 ? 6 : day - 1; // Monday = 0
+    const monday = new Date(now);
+    monday.setUTCDate(now.getUTCDate() - diff);
+    monday.setUTCHours(0, 0, 0, 0);
+    return monday.toISOString().split('T')[0];
   }
 
   cacheArtists(results) {
@@ -184,6 +209,22 @@ class SongDatabase {
       }
     }
     return { ...closest, diff: smallestDiff };
+  }
+
+  addGiveawayEntry(username, userId, isSubscriber) {
+    const weekStart = SongDatabase.getCurrentWeekStart();
+    const entries = isSubscriber ? 2 : 1;
+    this.stmts.addGiveawayEntry.run(username, userId, isSubscriber ? 1 : 0, entries, weekStart);
+  }
+
+  getGiveawayEntries(weekStart) {
+    return this.stmts.getGiveawayEntries.all(weekStart || SongDatabase.getCurrentWeekStart());
+  }
+
+  clearOldGiveawayEntries() {
+    const currentWeek = SongDatabase.getCurrentWeekStart();
+    // Delete entries from previous weeks
+    this.db.prepare(`DELETE FROM giveaway_entries WHERE week_start < ?`).run(currentWeek);
   }
 
   getStats() {
