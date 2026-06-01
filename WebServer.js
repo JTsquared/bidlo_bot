@@ -235,9 +235,9 @@ class WebServer {
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f0f; color: #e0e0e0; padding: 20px; margin: 0; }
-    .page-layout { display: flex; gap: 20px; }
+    .page-layout { display: flex; gap: 20px; align-items: flex-start; }
     .left-col { flex: 1; min-width: 0; }
-    .right-col { flex: 1; min-width: 0; position: sticky; top: 20px; align-self: flex-start; }
+    .right-col { flex: 1; min-width: 0; position: sticky; top: 20px; }
     h1 { color: #a78bfa; margin-bottom: 20px; }
     h2 { color: #8b5cf6; margin: 20px 0 10px; font-size: 18px; }
     .card { background: #1a1a2e; border: 1px solid #333; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
@@ -356,8 +356,8 @@ class WebServer {
 
     </div><!-- end left-col -->
     <div class="right-col">
-      <h2>Unified Chat</h2>
-      <div id="chatSection" class="card">
+      <div class="card" style="margin-bottom:0;">
+        <h2 style="color:#8b5cf6;margin:0 0 8px;font-size:18px;">Unified Chat</h2>
         <div id="chatBox" class="chat-box"><div class="empty">No messages yet</div></div>
       </div>
     </div><!-- end right-col -->
