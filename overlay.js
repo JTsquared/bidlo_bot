@@ -46,15 +46,15 @@ function getOverlayHTML() {
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 2px;
-      color: #6366f1;
+      color: #4338ca;
       margin-bottom: 6px;
-      font-weight: 600;
+      font-weight: 800;
     }
 
     .now-playing .song {
       font-size: 16px;
-      font-weight: 700;
-      color: #1a1a2e;
+      font-weight: 800;
+      color: #111;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -62,7 +62,8 @@ function getOverlayHTML() {
 
     .now-playing .requester {
       font-size: 12px;
-      color: rgba(0, 0, 0, 0.45);
+      color: rgba(0, 0, 0, 0.6);
+      font-weight: 600;
       margin-top: 4px;
     }
 
@@ -87,9 +88,9 @@ function getOverlayHTML() {
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 2px;
-      color: #6366f1;
+      color: #4338ca;
       margin-bottom: 8px;
-      font-weight: 600;
+      font-weight: 800;
     }
 
     .queue-item {
@@ -110,8 +111,8 @@ function getOverlayHTML() {
     .queue-item:last-child { border-bottom: none; }
 
     .queue-item .num {
-      color: #6366f1;
-      font-weight: 700;
+      color: #4338ca;
+      font-weight: 800;
       font-size: 14px;
       width: 24px;
       text-align: center;
@@ -125,7 +126,8 @@ function getOverlayHTML() {
 
     .queue-item .song-name {
       font-size: 13px;
-      color: #1a1a2e;
+      color: #111;
+      font-weight: 700;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -133,7 +135,8 @@ function getOverlayHTML() {
 
     .queue-item .req-by {
       font-size: 11px;
-      color: rgba(0, 0, 0, 0.4);
+      color: rgba(0, 0, 0, 0.55);
+      font-weight: 600;
     }
 
     .guesses-bar {
@@ -157,9 +160,9 @@ function getOverlayHTML() {
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 2px;
-      color: #16a34a;
+      color: #15803d;
       margin-bottom: 6px;
-      font-weight: 600;
+      font-weight: 800;
     }
 
     .guesses-bar .chips {
@@ -174,15 +177,25 @@ function getOverlayHTML() {
       border-radius: 16px;
       padding: 2px 10px;
       font-size: 12px;
-      color: #15803d;
+      font-weight: 700;
+      color: #166534;
     }
 
     .empty-queue {
-      color: rgba(0, 0, 0, 0.35);
+      color: rgba(0, 0, 0, 0.5);
       font-size: 12px;
+      font-weight: 600;
       font-style: italic;
       padding: 4px 0;
     }
+
+    .path-badges { margin-top: 4px; display: flex; gap: 4px; }
+    .path-badge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 800; }
+    .path-L { background: #166534; color: #a7f3d0; }
+    .path-R { background: #1e40af; color: #bfdbfe; }
+    .path-B { background: #9a3412; color: #fed7aa; }
+    .path-V { background: #7e22ce; color: #e9d5ff; }
+    .tuning-text { font-size: 10px; color: rgba(0,0,0,0.45); font-weight: 600; margin-left: 4px; }
   </style>
 </head>
 <body>
@@ -190,6 +203,7 @@ function getOverlayHTML() {
     <div class="now-playing" id="nowPlaying">
       <div class="label">Now Playing</div>
       <div class="song" id="npSong"></div>
+      <div class="path-badges" id="npPaths"></div>
       <div class="requester" id="npRequester"></div>
     </div>
 
@@ -210,6 +224,14 @@ function getOverlayHTML() {
     var lastGuessCount = 0;
     var basePath = window.location.pathname.replace(/\\/overlay\\/?$/, '');
 
+    function makeBadges(paths) {
+      if (!paths) return '';
+      return paths.split(',').map(function(p) {
+        p = p.trim();
+        return '<span class="path-badge path-' + p + '">' + p + '</span>';
+      }).join('');
+    }
+
     async function poll() {
       try {
         var res = await fetch(basePath + '/api/overlay/data');
@@ -219,6 +241,8 @@ function getOverlayHTML() {
         var npEl = document.getElementById('nowPlaying');
         if (data.nowPlaying) {
           document.getElementById('npSong').textContent = data.nowPlaying.artist + ' - ' + data.nowPlaying.title;
+          document.getElementById('npPaths').innerHTML = makeBadges(data.nowPlaying.paths_string) +
+            (data.nowPlaying.tuning_name ? '<span class="tuning-text">' + data.nowPlaying.tuning_name + '</span>' : '');
           document.getElementById('npRequester').textContent = 'Requested by ' + data.nowPlaying.requested_by;
           npEl.classList.add('visible');
 
@@ -244,6 +268,7 @@ function getOverlayHTML() {
               return '<div class="queue-item" style="transition-delay:' + (i * 0.1) + 's">' +
                 '<span class="num">' + (i + 1) + '</span>' +
                 '<div class="details"><div class="song-name">' + q.artist + ' - ' + q.title + '</div>' +
+                '<div style="display:flex;gap:3px;align-items:center">' + makeBadges(q.paths_string) + '</div>' +
                 '<div class="req-by">' + q.requested_by + '</div></div></div>';
             }).join('');
             setTimeout(function() {

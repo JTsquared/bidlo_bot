@@ -36,7 +36,13 @@ class SongDatabase {
         requested_by TEXT NOT NULL,
         requested_by_id TEXT,
         requested_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-        status TEXT NOT NULL DEFAULT 'queued'
+        status TEXT NOT NULL DEFAULT 'queued',
+        cdlc_id INTEGER,
+        paths_string TEXT,
+        tuning_name TEXT,
+        album TEXT,
+        creator TEXT,
+        downloads INTEGER
       );
 
       CREATE TABLE IF NOT EXISTS accuracy_guesses (
@@ -50,12 +56,18 @@ class SongDatabase {
       );
     `);
 
+    // Migrate existing queue table to add new columns
+    const migrateCols = ['cdlc_id INTEGER', 'paths_string TEXT', 'tuning_name TEXT', 'album TEXT', 'creator TEXT', 'downloads INTEGER'];
+    for (const col of migrateCols) {
+      try { this.db.exec(`ALTER TABLE queue ADD COLUMN ${col}`); } catch {}
+    }
+
     this.stmts = {
       upsertArtist: this.db.prepare(`INSERT OR REPLACE INTO artists (id, name, name_lower, cached_at) VALUES (?, ?, ?, strftime('%s', 'now'))`),
       upsertTitle: this.db.prepare(`INSERT OR REPLACE INTO titles (id, name, name_lower, cached_at) VALUES (?, ?, ?, strftime('%s', 'now'))`),
       searchArtists: this.db.prepare(`SELECT * FROM artists WHERE name_lower LIKE ? LIMIT 50`),
       searchTitles: this.db.prepare(`SELECT * FROM titles WHERE name_lower LIKE ? LIMIT 50`),
-      addToQueue: this.db.prepare(`INSERT INTO queue (artist, title, requested_by, requested_by_id) VALUES (?, ?, ?, ?)`),
+      addToQueue: this.db.prepare(`INSERT INTO queue (artist, title, requested_by, requested_by_id, cdlc_id, paths_string, tuning_name, album, creator, downloads) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
       getQueue: this.db.prepare(`SELECT * FROM queue WHERE status = 'queued' ORDER BY id ASC`),
       getNowPlaying: this.db.prepare(`SELECT * FROM queue WHERE status = 'playing' LIMIT 1`),
       markPlaying: this.db.prepare(`UPDATE queue SET status = 'playing' WHERE id = ?`),
@@ -98,8 +110,12 @@ class SongDatabase {
     return this.stmts.searchTitles.all(`%${query.toLowerCase()}%`);
   }
 
-  addToQueue(artist, title, requestedBy, requestedById) {
-    const info = this.stmts.addToQueue.run(artist, title, requestedBy, requestedById);
+  addToQueue(artist, title, requestedBy, requestedById, extra = {}) {
+    const info = this.stmts.addToQueue.run(
+      artist, title, requestedBy, requestedById,
+      extra.cdlc_id || null, extra.paths_string || null, extra.tuning_name || null,
+      extra.album || null, extra.creator || null, extra.downloads || null
+    );
     return info.lastInsertRowid;
   }
 

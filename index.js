@@ -3,11 +3,10 @@ require('dotenv').config();
 const BlazeAPI = require('./BlazeAPI.js');
 const BlazeWebSocket = require('./BlazeWebSocket.js');
 const SongDatabase = require('./Database.js');
-const CustomsForge = require('./CustomsForge.js');
+const RSPlaylist = require('./RSPlaylist.js');
 const CommandHandler = require('./CommandHandler.js');
 const WebServer = require('./WebServer.js');
 const TimedMessages = require('./TimedMessages.js');
-const PlaywrightAuth = require('./PlaywrightAuth.js');
 
 // --- Validate env ---
 const blazeConfig = {
@@ -27,102 +26,26 @@ if (!streamerUsername) {
   process.exit(1);
 }
 
-// Target channel — the streamer's channel where the bot listens and responds
-// Falls back to the bot's own channel if not set
 const targetChannelId = process.env.BIDLO_PERV_CHANNEL_ID || blazeConfig.channelId;
-
 const webPort = parseInt(process.env.WEB_PORT) || 3000;
-const hasCFCredentials = !!(process.env.CUSTOMSFORGE_EMAIL && process.env.CUSTOMSFORGE_PASSWORD);
 
 // --- Initialize ---
 const db = new SongDatabase();
+const rsChannel = process.env.RSPLAYLIST_CHANNEL || '';
+const rs = new RSPlaylist(rsChannel);
 const blazeAPI = new BlazeAPI(blazeConfig);
 const blazeWS = new BlazeWebSocket({ ...blazeConfig, targetChannelId }, blazeAPI);
 
-let playwrightAuth = null;
-let cf = null;
-let isStreamLive = false;
-
 const sendMessage = (channelId, message) => blazeWS.sendChatMessage(channelId, message);
-const commandHandler = new CommandHandler(db, null, sendMessage, streamerUsername);
+const commandHandler = new CommandHandler(db, rs, sendMessage, streamerUsername);
 const timedMessages = new TimedMessages(sendMessage, targetChannelId);
-const webServer = new WebServer(db, timedMessages, webPort);
-
-// --- CustomsForge session management ---
-async function connectCustomsForge() {
-  if (cf || !hasCFCredentials) return;
-
-  try {
-    console.log('CustomsForge: connecting...');
-    playwrightAuth = await PlaywrightAuth.create();
-    if (playwrightAuth && playwrightAuth.isLoggedIn) {
-      cf = new CustomsForge(playwrightAuth);
-      commandHandler.cf = cf;
-      console.log('CustomsForge: connected — live search enabled');
-    }
-  } catch (error) {
-    console.warn('CustomsForge: connection failed -', error.message);
-    console.warn('Song search will use local cache only');
-  }
-}
-
-async function disconnectCustomsForge() {
-  if (!playwrightAuth) return;
-
-  console.log('CustomsForge: disconnecting...');
-  cf = null;
-  commandHandler.cf = null;
-  await playwrightAuth.close();
-  playwrightAuth = null;
-  console.log('CustomsForge: disconnected');
-}
+const webServer = new WebServer(db, timedMessages, rs, webPort);
 
 // --- Chat handler ---
 blazeWS.on('chatMessage', (data) => {
   if (!data.text || !data.channelId) return;
   commandHandler.handle(data.username, data.userId || data.userChannelId, data.text, data.channelId);
 });
-
-// --- Stream status handlers ---
-blazeWS.on('streamLive', async () => {
-  if (isStreamLive) return;
-  isStreamLive = true;
-  console.log('Stream is LIVE — activating song requests');
-  await connectCustomsForge();
-});
-
-blazeWS.on('streamOffline', async () => {
-  if (!isStreamLive) return;
-  isStreamLive = false;
-  console.log('Stream is OFFLINE — deactivating song requests');
-  await disconnectCustomsForge();
-});
-
-// --- Periodic live status poll (fallback in case we miss socket events) ---
-let liveCheckInterval = null;
-
-function startLivePolling() {
-  if (liveCheckInterval) return;
-  liveCheckInterval = setInterval(async () => {
-    const live = await blazeAPI.isChannelLive(targetChannelId);
-    if (live && !isStreamLive) {
-      isStreamLive = true;
-      console.log('Stream is LIVE (detected via poll)');
-      await connectCustomsForge();
-    } else if (!live && isStreamLive) {
-      isStreamLive = false;
-      console.log('Stream is OFFLINE (detected via poll)');
-      await disconnectCustomsForge();
-    }
-  }, 120000); // Check every 2 minutes
-}
-
-function stopLivePolling() {
-  if (liveCheckInterval) {
-    clearInterval(liveCheckInterval);
-    liveCheckInterval = null;
-  }
-}
 
 // --- Reconnection ---
 let reconnectAttempts = 0;
@@ -156,35 +79,14 @@ async function attemptReconnect() {
 }
 
 // --- Events ---
-const alwaysConnectCF = process.env.ALWAYS_CONNECT_CF === 'true';
-
-blazeWS.on('connected', async () => {
+blazeWS.on('connected', () => {
   console.log('Blaze connected - bot ready');
   timedMessages.start();
-
-  if (alwaysConnectCF) {
-    console.log('ALWAYS_CONNECT_CF enabled — connecting to CustomsForge immediately');
-    isStreamLive = true;
-    await connectCustomsForge();
-  } else {
-    startLivePolling();
-
-    // Check if stream is already live on connect
-    const live = await blazeAPI.isChannelLive(targetChannelId);
-    if (live && !isStreamLive) {
-      isStreamLive = true;
-      console.log('Stream is currently LIVE');
-      await connectCustomsForge();
-    } else if (!live) {
-      console.log('Stream is currently offline — will connect to CustomsForge when stream goes live');
-    }
-  }
 });
 
 blazeWS.on('disconnected', (reason) => {
   console.log('Blaze disconnected:', reason);
   timedMessages.stop();
-  stopLivePolling();
   attemptReconnect();
 });
 
@@ -194,9 +96,10 @@ async function main() {
 
   const stats = db.getStats();
   console.log(`Database: ${stats.artists} artists, ${stats.titles} titles cached`);
+  console.log('Song search: RS Playlist API (no auth required)');
 
-  if (!hasCFCredentials) {
-    console.warn('CustomsForge: no credentials set — song search will use local cache only');
+  if (rsChannel) {
+    await rs.loadOwnedSongs();
   }
 
   webServer.start();
@@ -214,13 +117,11 @@ async function main() {
 }
 
 // Graceful shutdown
-async function shutdown() {
+function shutdown() {
   console.log('\nShutting down...');
-  stopLivePolling();
   timedMessages.stop();
   blazeWS.disconnect();
   webServer.stop();
-  await disconnectCustomsForge();
   db.close();
   process.exit(0);
 }

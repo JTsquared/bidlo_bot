@@ -1,7 +1,7 @@
 class CommandHandler {
-  constructor(db, customsForge, sendMessage, streamerUsername) {
+  constructor(db, rsPlaylist, sendMessage, streamerUsername) {
     this.db = db;
-    this.cf = customsForge;
+    this.rs = rsPlaylist;
     this.sendMessage = sendMessage;
     this.streamerUsername = streamerUsername?.toLowerCase();
     this.pendingPicks = new Map();
@@ -51,32 +51,36 @@ class CommandHandler {
 
   async handleRequest(username, userId, query, channelId) {
     if (!query) {
-      return this.sendMessage(channelId, `@${username} Usage: !request <artist> - <song> or !request <song>`);
+      return this.sendMessage(channelId, `@${username} Usage: !request <song or artist> or !request <artist> - <song>`);
     }
 
     let results = [];
 
-    // Prefer live search when CustomsForge is connected
-    if (this.cf) {
-      const cfResult = await this.cf.search(query);
+    // Search RS Playlist API
+    const searchResult = await this.rs.search(query);
+    results = searchResult.results;
 
-      if (cfResult.authExpired) {
-        return this.sendMessage(channelId, `@${username} Song search is temporarily unavailable. Please try again later.`);
-      }
-
-      results = cfResult.results;
-
-      if (cfResult.results.length > 0) {
-        const titleItems = cfResult.results.map((r) => ({ id: r.title, text: r.title }));
-        this.db.cacheTitles(titleItems);
+    // Deduplicate by artist+title for viewer display
+    // Keep the version with most downloads as the representative entry
+    // Store all versions so admin can pick the right CDLC later
+    const deduped = [];
+    const seen = new Map();
+    for (const r of results) {
+      const key = `${(r.artist || '').toLowerCase()}|${(r.title || '').toLowerCase()}`;
+      const existing = seen.get(key);
+      if (!existing || (r.downloads || 0) > (existing.downloads || 0)) {
+        seen.set(key, r);
       }
     }
+    results = Array.from(seen.values());
 
-    // Fall back to local cache if live search unavailable or returned nothing
+    // Fall back to local cache if API returned nothing
     if (results.length === 0) {
       const localTitles = this.db.searchTitlesLocal(query);
       if (localTitles.length > 0) {
-        results = localTitles.map((t) => ({ artist: '', title: t.name }));
+        results = localTitles.map((t) => ({
+          artist: '', title: t.name, paths_string: '', cdlc_id: null,
+        }));
       }
     }
 
@@ -86,8 +90,12 @@ class CommandHandler {
 
     if (results.length === 1) {
       const song = results[0];
-      const display = song.artist ? `${song.artist} - ${song.title}` : song.title;
-      const queueId = this.db.addToQueue(song.artist || 'Unknown', song.title, username, userId);
+      const display = `${song.artist} - ${song.title}`;
+      this.db.addToQueue(song.artist, song.title, username, userId, {
+        cdlc_id: song.cdlc_id, paths_string: song.paths_string,
+        tuning_name: song.tuning_name, album: song.album,
+        creator: song.creator, downloads: song.downloads,
+      });
       const position = this.db.getQueue().length;
       return this.sendMessage(channelId, `@${username} Added "${display}" to the queue! (Position #${position})`);
     }
@@ -109,8 +117,7 @@ class CommandHandler {
     }, this.pickTimeout + 1000);
 
     const lines = displayResults.map((r, i) => {
-      const display = r.artist ? `${r.artist} - ${r.title}` : r.title;
-      return `${i + 1}. ${display}`;
+      return `${i + 1}. ${r.artist} - ${r.title}`;
     });
 
     await this.sendMessage(channelId, `@${username} Found ${results.length} matches: ${lines.join(' | ')} — Reply !pick 1-${maxShow} to select`);
@@ -132,8 +139,12 @@ class CommandHandler {
     const song = pending.results[num - 1];
     this.pendingPicks.delete(key);
 
-    const display = song.artist ? `${song.artist} - ${song.title}` : song.title;
-    this.db.addToQueue(song.artist || 'Unknown', song.title, username, userId);
+    const display = `${song.artist} - ${song.title}`;
+    this.db.addToQueue(song.artist, song.title, username, userId, {
+      cdlc_id: song.cdlc_id, paths_string: song.paths_string,
+      tuning_name: song.tuning_name, album: song.album,
+      creator: song.creator, downloads: song.downloads,
+    });
     const position = this.db.getQueue().length;
 
     return this.sendMessage(channelId, `@${username} Added "${display}" to the queue! (Position #${position})`);
@@ -155,7 +166,9 @@ class CommandHandler {
     if (queue.length === 0) {
       msg += 'Queue is empty.';
     } else {
-      const items = queue.slice(0, 5).map((q, i) => `${i + 1}. ${q.artist} - ${q.title} (${q.requested_by})`);
+      const items = queue.slice(0, 5).map((q, i) => {
+        return `${i + 1}. ${q.artist} - ${q.title} (${q.requested_by})`;
+      });
       msg += `Queue (${queue.length}): ${items.join(' | ')}`;
       if (queue.length > 5) msg += ` ...and ${queue.length - 5} more`;
     }

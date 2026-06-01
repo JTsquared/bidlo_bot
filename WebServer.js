@@ -2,9 +2,10 @@ const http = require('http');
 const { getOverlayHTML } = require('./overlay.js');
 
 class WebServer {
-  constructor(db, timedMessages, port = 3000) {
+  constructor(db, timedMessages, rsPlaylist, port = 3000) {
     this.db = db;
     this.timedMessages = timedMessages;
+    this.rs = rsPlaylist;
     this.port = port;
     this.server = null;
   }
@@ -70,8 +71,9 @@ class WebServer {
     try {
       // GET /api/queue - get queue state
       if (url.pathname === '/api/queue' && req.method === 'GET') {
-        const queue = this.db.getQueue();
-        const nowPlaying = this.db.getNowPlaying();
+        const queue = this.db.getQueue().map((q) => ({ ...q, owned: this.rs.isOwned(q.artist, q.title) }));
+        const np = this.db.getNowPlaying();
+        const nowPlaying = np ? { ...np, owned: this.rs.isOwned(np.artist, np.title) } : null;
         return sendJSON(200, { queue, nowPlaying });
       }
 
@@ -136,6 +138,24 @@ class WebServer {
       // GET /api/stats - database stats
       if (url.pathname === '/api/stats' && req.method === 'GET') {
         return sendJSON(200, this.db.getStats());
+      }
+
+      // GET /api/search?q=query — search RS Playlist (for download modal)
+      if (url.pathname === '/api/search' && req.method === 'GET') {
+        const q = url.searchParams.get('q');
+        if (!q) return sendJSON(400, { error: 'Query parameter q is required' });
+        const result = await this.rs.search(q);
+        // Add owned flag to each result
+        for (const r of result.results) {
+          r.owned = this.rs.isOwned(r.artist, r.title);
+        }
+        return sendJSON(200, result);
+      }
+
+      // POST /api/owned/refresh — reload owned DLC list
+      if (url.pathname === '/api/owned/refresh' && req.method === 'POST') {
+        await this.rs.refreshOwned();
+        return sendJSON(200, { count: this.rs.ownedSongs?.size || 0 });
       }
 
       // --- Timed Messages API ---
@@ -214,6 +234,34 @@ class WebServer {
     .queue-item .info { flex: 1; }
     .queue-item .title { color: #fff; }
     .queue-item .requester { color: #888; font-size: 13px; }
+    .queue-item .song-meta { display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+    .path-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+    .path-L { background: #166534; color: #a7f3d0; }
+    .path-R { background: #1e40af; color: #bfdbfe; }
+    .path-B { background: #9a3412; color: #fed7aa; }
+    .path-V { background: #7e22ce; color: #e9d5ff; }
+    .tuning { color: #888; font-size: 11px; }
+    .dl-link { color: #60a5fa; text-decoration: none; font-size: 12px; }
+    .dl-link:hover { text-decoration: underline; }
+    .creator-info { color: #666; font-size: 11px; }
+    .owned-badge { background: #166534; color: #a7f3d0; padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+    .not-owned-badge { background: #9a3412; color: #fed7aa; padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; cursor: pointer; }
+    .not-owned-badge:hover { background: #c2410c; }
+    .modal-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:1000; justify-content:center; align-items:center; }
+    .modal-overlay.show { display:flex; }
+    .modal { background:#1a1a2e; border:1px solid #444; border-radius:16px; padding:32px; max-width:1000px; width:95%; max-height:85vh; overflow-y:auto; }
+    .modal h3 { color:#a78bfa; margin-bottom:20px; font-size:24px; }
+    .modal-close { float:right; background:none; border:none; color:#888; font-size:32px; cursor:pointer; padding:0; margin:0; }
+    .modal-close:hover { color:#fff; }
+    .dl-row { display:flex; justify-content:space-between; align-items:center; padding:16px 0; border-bottom:1px solid #222; }
+    .dl-row:last-child { border-bottom:none; }
+    .dl-row .dl-info { flex:1; }
+    .dl-row .dl-title { color:#fff; font-weight:600; font-size:16px; }
+    .dl-row .dl-title .path-badge { font-size:14px; padding:3px 8px; }
+    .dl-row .dl-title .tuning { font-size:14px; }
+    .dl-row .dl-meta { color:#888; font-size:15px; margin-top:6px; }
+    .dl-row .dl-actions { display:flex; gap:8px; align-items:center; }
+    .dl-row .dl-actions button { font-size:16px; padding:10px 24px; }
     button { background: #6366f1; color: white; border: none; border-radius: 8px; padding: 8px 16px; cursor: pointer; font-size: 14px; margin-right: 8px; }
     button:hover { background: #5558e6; }
     button.danger { background: #ef4444; }
@@ -279,7 +327,26 @@ class WebServer {
     </div>
   </div>
 
+  <div class="modal-overlay" id="dlModal">
+    <div class="modal">
+      <button class="modal-close" onclick="closeDownloadModal()">&times;</button>
+      <h3 id="dlModalTitle">Download Options</h3>
+      <div id="dlModalContent"><div class="empty">Loading...</div></div>
+    </div>
+  </div>
+
   <script>
+    function esc(s) { return (s || '').replace(/'/g, "\\\\'").replace(/"/g, '&quot;'); }
+
+    var pathLabels = { L: 'Lead', R: 'Rhythm', B: 'Bass', V: 'Vocals' };
+    function pathBadges(paths) {
+      if (!paths) return '';
+      return paths.split(',').map(function(p) {
+        p = p.trim();
+        return '<span class="path-badge path-' + p + '" title="' + (pathLabels[p] || p) + '">' + p + '</span>';
+      }).join(' ');
+    }
+
     // Use relative URL so it works behind a reverse proxy sub-path
     var basePath = window.location.pathname.replace(/\\/$/, '');
     async function api(path, method, body) {
@@ -296,11 +363,18 @@ class WebServer {
       // Now Playing
       const np = document.getElementById('nowPlaying');
       if (qData.nowPlaying) {
-        np.querySelector('.song').textContent = qData.nowPlaying.artist + ' - ' + qData.nowPlaying.title;
-        np.querySelector('.meta').textContent = 'Requested by ' + qData.nowPlaying.requested_by;
+        var n = qData.nowPlaying;
+        np.querySelector('.song').textContent = n.artist + ' - ' + n.title;
+        var ownedHtml = n.owned
+          ? '<span class="owned-badge">Owned</span>'
+          : '<span class="not-owned-badge" onclick="openDownloadModal(\\'' + esc(n.artist) + '\\', \\'' + esc(n.title) + '\\')">Not Owned - Download</span>';
+        np.querySelector('.meta').innerHTML = pathBadges(n.paths_string) +
+          (n.tuning_name ? ' <span class="tuning">' + n.tuning_name + '</span> ' : '') +
+          ownedHtml +
+          '<div style="margin-top:4px;color:#a0a0a0">Requested by ' + n.requested_by + '</div>';
       } else {
         np.querySelector('.song').textContent = 'Nothing playing';
-        np.querySelector('.meta').textContent = '';
+        np.querySelector('.meta').innerHTML = '';
       }
 
       // Queue
@@ -309,8 +383,14 @@ class WebServer {
         qEl.innerHTML = '<div class="empty">Queue is empty</div>';
       } else {
         qEl.innerHTML = qData.queue.map(function(q, i) {
+          var ownedHtml = q.owned
+            ? '<span class="owned-badge">Owned</span>'
+            : '<span class="not-owned-badge" onclick="openDownloadModal(\\'' + esc(q.artist) + '\\', \\'' + esc(q.title) + '\\')">Not Owned - Download</span>';
           return '<div class="queue-item"><span class="num">' + (i + 1) + '</span><div class="info"><div class="title">' +
-            q.artist + ' - ' + q.title + '</div><div class="requester">' + q.requested_by + '</div></div>' +
+            q.artist + ' - ' + q.title + '</div><div class="song-meta">' + pathBadges(q.paths_string) +
+            (q.tuning_name ? '<span class="tuning">' + q.tuning_name + '</span>' : '') +
+            ownedHtml +
+            '</div><div class="requester">' + q.requested_by + '</div></div>' +
             '<button class="btn-sm danger" onclick="removeFromQueue(' + q.id + ')">X</button></div>';
         }).join('');
       }
@@ -378,6 +458,44 @@ class WebServer {
 
     async function toggleTimedMsg(id, enabled) { await api('/timed-messages/' + id, 'PUT', { enabled: enabled }); loadTimedMessages(); }
     async function deleteTimedMsg(id) { await api('/timed-messages/' + id, 'DELETE'); loadTimedMessages(); }
+
+    async function openDownloadModal(artist, title) {
+      var modal = document.getElementById('dlModal');
+      var content = document.getElementById('dlModalContent');
+      document.getElementById('dlModalTitle').textContent = artist + ' - ' + title;
+      content.innerHTML = '<div class="empty">Searching...</div>';
+      modal.classList.add('show');
+
+      var data = await api('/search?q=' + encodeURIComponent(artist + ' ' + title));
+      var results = (data.results || []).filter(function(r) {
+        return r.artist.toLowerCase() === artist.toLowerCase() && r.title.toLowerCase() === title.toLowerCase();
+      });
+
+      if (results.length === 0) {
+        content.innerHTML = '<div class="empty">No download options found</div>';
+        return;
+      }
+
+      // Sort by downloads descending
+      results.sort(function(a, b) { return (b.downloads || 0) - (a.downloads || 0); });
+
+      content.innerHTML = results.map(function(r) {
+        return '<div class="dl-row"><div class="dl-info"><div class="dl-title">' + pathBadges(r.paths_string) +
+          ' <span class="tuning">' + (r.tuning_name || '') + '</span></div>' +
+          '<div class="dl-meta">by ' + (r.creator || 'Unknown') + ' | ' + (r.downloads || 0) + ' downloads' +
+          (r.dd ? ' | DD' : '') + '</div></div>' +
+          '<div class="dl-actions"><a class="dl-link" href="https://ignition4.customsforge.com/cdlc/' + r.cdlc_id + '" target="_blank"><button class="btn-sm">Download</button></a></div></div>';
+      }).join('');
+    }
+
+    function closeDownloadModal() {
+      document.getElementById('dlModal').classList.remove('show');
+    }
+
+    // Close modal on overlay click
+    document.getElementById('dlModal').addEventListener('click', function(e) {
+      if (e.target === this) closeDownloadModal();
+    });
 
     setInterval(refresh, 3000);
     refresh();
