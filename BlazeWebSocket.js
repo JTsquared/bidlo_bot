@@ -14,6 +14,7 @@ class BlazeWebSocket extends EventEmitter {
     this.healthCheckIntervalMs = 30000;
     this.maxInactivityMs = 120000;
     this.recentMessages = new Map();
+    this.seenIncoming = new Set();
   }
 
   generateUUID() {
@@ -79,6 +80,10 @@ class BlazeWebSocket extends EventEmitter {
 
     this.socket.onAny((eventName, ...args) => {
       this.lastActivityTime = Date.now();
+      // DEBUG: log all chat-related events to diagnose duplicates
+      if (eventName.startsWith('channel_chat_') || (eventName === 'eventsub' && args[0]?.metadata?.subscriptionType?.includes('chat'))) {
+        console.log(`[WS DEBUG] ${eventName}`, JSON.stringify(args[0]).substring(0, 150));
+      }
       this.handleEvent(eventName, ...args);
     });
   }
@@ -210,17 +215,28 @@ class BlazeWebSocket extends EventEmitter {
     const channelId = data.channelId || data.channel_id || data.channel;
     const username = data.sender?.displayName || data.displayName || data.username || data.slug || data.name || 'Anonymous';
     const userChannelId = data.sender?.id || data.userId || data.user_id || data.id;
+    const messageId = data.id || data.messageId;
 
-    if (messageText) {
-      this.emit('chatMessage', {
-        username,
-        userId: data.userId || data.user_id || data.id,
-        userChannelId,
-        text: messageText,
-        channelId,
-        sender: data.sender,
-      });
+    if (!messageText) return;
+
+    // Deduplicate incoming messages
+    const dedupeKey = messageId || `${username}:${messageText}:${Date.now() >> 10}`;
+    if (this.seenIncoming.has(dedupeKey)) return;
+    this.seenIncoming.add(dedupeKey);
+    if (this.seenIncoming.size > 500) {
+      const arr = Array.from(this.seenIncoming);
+      this.seenIncoming = new Set(arr.slice(-250));
     }
+
+    this.emit('chatMessage', {
+      username,
+      userId: data.userId || data.user_id || data.id,
+      userChannelId,
+      text: messageText,
+      channelId,
+      sender: data.sender,
+      messageId,
+    });
   }
 
   async sendChatMessage(channelId, message) {

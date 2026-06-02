@@ -7,6 +7,7 @@ class CommandHandler {
     this.subscriberService = subscriberService;
     this.pendingPicks = new Map();
     this.pickTimeout = 60000;
+    this.recentCommands = new Map();
   }
 
   isStreamer(username) {
@@ -16,6 +17,16 @@ class CommandHandler {
   async handle(username, userId, text, channelId) {
     const trimmed = text.trim();
     if (!trimmed.startsWith('!')) return;
+
+    // Deduplicate rapid-fire identical commands (within 5 seconds)
+    const cmdKey = `${username}:${trimmed}`;
+    const lastTime = this.recentCommands.get(cmdKey);
+    const now = Date.now();
+    if (lastTime && now - lastTime < 5000) return;
+    this.recentCommands.set(cmdKey, now);
+    for (const [k, t] of this.recentCommands) {
+      if (now - t > 10000) this.recentCommands.delete(k);
+    }
 
     const parts = trimmed.split(/\s+/);
     const command = parts[0].toLowerCase();
