@@ -148,6 +148,28 @@ async function main() {
   }
   scheduleDailyReset();
 
+  // Stream live status check
+  const BLAZE_API = 'https://api.blaze.stream/v1';
+  async function checkStreamLive() {
+    try {
+      const token = await tokenManager.getAppToken();
+      if (!token) return;
+      const res = await fetch(`${BLAZE_API}/channels/stream-info?channelId=${targetChannelId}`, {
+        headers: { Authorization: `Bearer ${token}`, 'Client-Id': blazeClientId },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const isLive = data.isLive === true || data.data?.isLive === true;
+        if (isLive !== commandHandler.isStreamLive) {
+          commandHandler.isStreamLive = isLive;
+          console.log(`Stream is ${isLive ? 'LIVE' : 'OFFLINE'}`);
+        }
+      }
+    } catch {}
+  }
+  await checkStreamLive();
+  setInterval(checkStreamLive, 60000); // Check every minute
+
   webServer.start();
 
   // Start Blaze chat polling

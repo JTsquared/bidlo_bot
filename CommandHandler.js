@@ -8,6 +8,7 @@ class CommandHandler {
     this.pendingPicks = new Map();
     this.pickTimeout = 60000;
     this.recentCommands = new Map();
+    this.isStreamLive = false;
   }
 
   isStreamer(username) {
@@ -64,6 +65,9 @@ class CommandHandler {
   }
 
   async handleRequest(username, userId, query, channelId) {
+    if (!this.isStreamLive) {
+      return this.sendMessage(channelId, `@${username} Song requests are only available when the stream is live!`);
+    }
     if (!query) {
       return this.sendMessage(channelId, `@${username} Usage: !request <song or artist> or !request <artist> - <song>`);
     }
