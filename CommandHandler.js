@@ -60,8 +60,6 @@ class CommandHandler {
         return this.handleShowGuesses(channelId);
       case '!giveaway':
         return this.handleGiveaway(username, channelId);
-      case '!draw':
-        return this.handleDraw(username, channelId);
     }
   }
 
@@ -173,7 +171,7 @@ class CommandHandler {
     if (channelId === 'arena') return;
     try {
       const isSub = this.subscriberService ? await this.subscriberService.isSubscriber(username) : false;
-      this.db.addGiveawayEntry(username, userId, isSub);
+      this.db.addGiveawayEntry(username, userId, isSub, true); // extraEntry=true for song request
     } catch (err) {
       console.error('Giveaway entry error:', err.message);
     }
@@ -182,36 +180,15 @@ class CommandHandler {
   async handleGiveaway(username, channelId) {
     const entries = this.db.getGiveawayEntries();
     if (entries.length === 0) {
-      return this.sendMessage(channelId, 'No giveaway entries this week! Request a song with !request to enter.');
+      return this.sendMessage(channelId, 'No giveaway entries today! Subscribers get auto-entered, request a song for a bonus entry.');
     }
     const list = entries.map((e) => {
-      const subTag = e.is_subscriber ? ' (2x sub)' : '';
-      return `${e.username}${subTag}`;
+      const tag = e.entries > 1 ? ` (${e.entries}x)` : '';
+      return `${e.username}${tag}`;
     }).join(', ');
-    return this.sendMessage(channelId, `Giveaway entries (${entries.length}): ${list}`);
+    return this.sendMessage(channelId, `Today's giveaway (${entries.length} people): ${list}`);
   }
 
-  async handleDraw(username, channelId) {
-    if (!this.isStreamer(username)) {
-      return this.sendMessage(channelId, `@${username} Only the streamer can use !draw`);
-    }
-    const entries = this.db.getGiveawayEntries();
-    if (entries.length === 0) {
-      return this.sendMessage(channelId, 'No giveaway entries to draw from!');
-    }
-
-    // Build weighted pool — subscribers get 2 entries
-    const pool = [];
-    for (const e of entries) {
-      pool.push(e.username);
-      if (e.is_subscriber) pool.push(e.username);
-    }
-
-    const winner = pool[Math.floor(Math.random() * pool.length)];
-    const winnerEntry = entries.find((e) => e.username === winner);
-    const subTag = winnerEntry?.is_subscriber ? ' (subscriber)' : '';
-    return this.sendMessage(channelId, `Giveaway winner: ${winner}${subTag}! Congratulations!`);
-  }
 
   async handleQueue(channelId) {
     const queue = this.db.getQueue();

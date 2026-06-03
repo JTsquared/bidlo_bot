@@ -1,55 +1,22 @@
 const BLAZE_API = 'https://api.blaze.stream/v1';
-const BLAZE_TOKEN_URL = 'https://blaze.stream/bapi/oauth2/token';
 
 class SubscriberService {
-  constructor(clientId, clientSecret, channelId) {
+  constructor(tokenManager, clientId, channelId) {
+    this.tokenManager = tokenManager;
     this.clientId = clientId;
-    this.clientSecret = clientSecret;
     this.channelId = channelId;
-    this.appAccessToken = null;
-    this.tokenExpiresAt = 0;
-    this.subscribers = new Map(); // lowercase username -> subscriber info
+    this.subscribers = new Map();
     this.lastRefresh = 0;
-    this.refreshIntervalMs = 300000; // Refresh every 5 minutes
-  }
-
-  async getAppToken() {
-    if (this.appAccessToken && Date.now() < this.tokenExpiresAt) {
-      return this.appAccessToken;
-    }
-
-    try {
-      const response = await fetch(BLAZE_TOKEN_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clientId: this.clientId,
-          clientSecret: this.clientSecret,
-          grantType: 'client_credentials',
-        }),
-      });
-
-      if (!response.ok) {
-        console.error(`Blaze app token failed (${response.status}):`, await response.text());
-        return null;
-      }
-
-      const data = await response.json();
-      this.appAccessToken = data.accessToken;
-      this.tokenExpiresAt = Date.now() + (data.expiresIn - 60) * 1000; // Refresh 60s early
-      console.log('Blaze: app access token obtained');
-      return this.appAccessToken;
-    } catch (error) {
-      console.error('Blaze app token error:', error.message);
-      return null;
-    }
+    this.refreshIntervalMs = 300000; // 5 minutes
   }
 
   async refresh() {
-    if (!this.clientId || !this.clientSecret) return;
-
-    const token = await this.getAppToken();
-    if (!token) return;
+    // Use streamer's token (has access to their subscriber list)
+    const token = await this.tokenManager.getAccessToken('streamer');
+    if (!token) {
+      console.error('Subscribers: no streamer access token');
+      return;
+    }
 
     try {
       let allRows = [];
@@ -57,7 +24,6 @@ class SubscriberService {
 
       do {
         const params = new URLSearchParams({ limit: '100' });
-        if (this.channelId) params.set('channelId', this.channelId);
         if (cursor) params.set('cursor', cursor);
 
         const response = await fetch(`${BLAZE_API}/channels/subscribers?${params}`, {
@@ -69,25 +35,28 @@ class SubscriberService {
         });
 
         if (!response.ok) {
-          console.error(`Subscriber list failed (${response.status}):`, await response.text());
+          const err = await response.text();
+          console.error(`Subscribers: list failed (${response.status}):`, err.substring(0, 200));
           break;
         }
 
         const data = await response.json();
-        const rows = data.rows || [];
-        allRows = allRows.concat(rows);
-        cursor = data.pagination?.cursor || null;
+        if (allRows.length === 0) {
+          console.log('Subscribers: response:', JSON.stringify(data).substring(0, 500));
+        }
+        const rows = data.rows || data.data?.rows || data.data || [];
+        allRows = allRows.concat(Array.isArray(rows) ? rows : []);
+        cursor = data.pagination?.cursor || data.data?.pagination?.cursor || null;
       } while (cursor);
 
       this.subscribers.clear();
       for (const sub of allRows) {
-        const name = (sub.username || sub.displayName || '').toLowerCase();
+        const name = (sub.slug || sub.username || sub.displayName || '').toLowerCase();
         if (name) {
           this.subscribers.set(name, {
-            userId: sub.userId,
+            userId: sub.id || sub.userId,
             displayName: sub.displayName,
-            username: sub.username,
-            expiresAt: sub.subscriptionInfo?.expiresAt,
+            username: sub.slug || sub.username,
           });
         }
       }
@@ -95,7 +64,7 @@ class SubscriberService {
       this.lastRefresh = Date.now();
       console.log(`Subscribers: ${this.subscribers.size} active`);
     } catch (error) {
-      console.error('Subscriber refresh error:', error.message);
+      console.error('Subscribers: refresh error:', error.message);
     }
   }
 

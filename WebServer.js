@@ -9,6 +9,7 @@ class WebServer {
     this.chatManager = chatManager;
     this.port = port;
     this.server = null;
+    this.crypto = require('crypto');
   }
 
   start() {
@@ -31,10 +32,7 @@ class WebServer {
       return;
     }
 
-    if (url.pathname.startsWith('/api/')) {
-      return this.handleAPI(req, res, url);
-    }
-
+    // Public routes — overlays don't need auth
     if (url.pathname === '/overlay') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(getOverlayHTML());
@@ -45,6 +43,32 @@ class WebServer {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(this.getChatOverlayHTML());
       return;
+    }
+
+    // Public API endpoints (overlay data, chat)
+    if (url.pathname === '/api/overlay/data' || url.pathname === '/api/chat') {
+      return this.handleAPI(req, res, url);
+    }
+
+    // Login page
+    if (url.pathname === '/login') {
+      if (req.method === 'POST') {
+        return this.handleLogin(req, res);
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(this.getLoginHTML());
+      return;
+    }
+
+    // Protected routes — check auth
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(302, { Location: '/login' });
+      res.end();
+      return;
+    }
+
+    if (url.pathname.startsWith('/api/')) {
+      return this.handleAPI(req, res, url);
     }
 
     if (url.pathname === '/' || url.pathname === '/index.html') {
@@ -150,8 +174,32 @@ class WebServer {
       // GET /api/giveaway — get current week's giveaway entries
       if (url.pathname === '/api/giveaway' && req.method === 'GET') {
         const SongDatabase = require('./Database.js');
-        const entries = this.db.getGiveawayEntries(SongDatabase.getCurrentWeekStart());
-        return sendJSON(200, { entries, weekStart: SongDatabase.getCurrentWeekStart() });
+        const entries = this.db.getGiveawayEntries(SongDatabase.getTodayKey());
+        return sendJSON(200, { entries, dayKey: SongDatabase.getTodayKey() });
+      }
+
+      // POST /api/giveaway — manually add a giveaway entry (always adds, even if exists)
+      if (url.pathname === '/api/giveaway' && req.method === 'POST') {
+        const { username } = await readBody();
+        if (!username || !username.trim()) return sendJSON(400, { error: 'Username is required' });
+        this.db.forceAddGiveawayEntry(username.trim());
+        const SongDatabase = require('./Database.js');
+        return sendJSON(201, { entries: this.db.getGiveawayEntries(SongDatabase.getTodayKey()) });
+      }
+
+      // DELETE /api/giveaway/:id — remove a giveaway entry
+      const giveawayDeleteMatch = url.pathname.match(/^\/api\/giveaway\/(\d+)$/);
+      if (giveawayDeleteMatch && req.method === 'DELETE') {
+        this.db.removeGiveawayEntry(parseInt(giveawayDeleteMatch[1]));
+        const SongDatabase = require('./Database.js');
+        return sendJSON(200, { entries: this.db.getGiveawayEntries(SongDatabase.getTodayKey()) });
+      }
+
+      // POST /api/giveaway/clear — clear all entries for today
+      if (url.pathname === '/api/giveaway/clear' && req.method === 'POST') {
+        const SongDatabase = require('./Database.js');
+        this.db.clearGiveawayEntries(SongDatabase.getTodayKey());
+        return sendJSON(200, { entries: [] });
       }
 
       // GET /api/chat?since=timestamp — get unified chat messages
@@ -230,6 +278,87 @@ class WebServer {
       console.error('API error:', error.message);
       sendJSON(500, { error: error.message });
     }
+  }
+
+  isAuthenticated(req) {
+    // If no password is set yet, require setup
+    if (!this.db.getAdminPasswordHash()) return false;
+    const cookies = (req.headers.cookie || '').split(';').reduce((acc, c) => {
+      const [k, v] = c.trim().split('=');
+      if (k) acc[k] = v;
+      return acc;
+    }, {});
+    return this.db.validateSession(cookies.session);
+  }
+
+  hashPassword(password) {
+    return this.crypto.createHash('sha256').update(password).digest('hex');
+  }
+
+  async handleLogin(req, res) {
+    const body = await new Promise((resolve) => {
+      let data = '';
+      req.on('data', (chunk) => { data += chunk; });
+      req.on('end', () => resolve(data));
+    });
+    const params = new URLSearchParams(body);
+    const password = params.get('password');
+    const hash = this.hashPassword(password);
+
+    const existingHash = this.db.getAdminPasswordHash();
+
+    // First-time setup — no password set yet
+    if (!existingHash) {
+      this.db.setAdminPassword(hash);
+      const token = this.crypto.randomBytes(32).toString('hex');
+      this.db.createSession(token, 100);
+      res.writeHead(302, {
+        Location: '/',
+        'Set-Cookie': `session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=8640000`,
+      });
+      res.end();
+      console.log('Admin password set');
+      return;
+    }
+
+    // Normal login
+    if (hash === existingHash) {
+      const token = this.crypto.randomBytes(32).toString('hex');
+      this.db.createSession(token, 100);
+      this.db.cleanExpiredSessions();
+      res.writeHead(302, {
+        Location: '/',
+        'Set-Cookie': `session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=8640000`,
+      });
+      res.end();
+    } else {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(this.getLoginHTML('Invalid password'));
+    }
+  }
+
+  getLoginHTML(error) {
+    const isSetup = !this.db.getAdminPasswordHash();
+    const title = isSetup ? 'Set Admin Password' : 'Login';
+    const placeholder = isSetup ? 'Choose a password' : 'Admin password';
+    const buttonText = isSetup ? 'Set Password' : 'Login';
+    return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Bidlo Bot - ${title}</title>
+<style>
+  body { font-family: -apple-system, sans-serif; background: #0f0f0f; color: #e0e0e0; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+  .login { background: #1a1a2e; border: 1px solid #333; border-radius: 12px; padding: 32px; width: 320px; }
+  h2 { color: #a78bfa; margin: 0 0 20px; }
+  input { width: 100%; background: #222; border: 1px solid #444; color: #fff; border-radius: 8px; padding: 10px; font-size: 16px; margin-bottom: 12px; box-sizing: border-box; }
+  button { width: 100%; background: #6366f1; color: white; border: none; border-radius: 8px; padding: 10px; font-size: 16px; cursor: pointer; }
+  button:hover { background: #5558e6; }
+  .error { color: #ef4444; margin-bottom: 12px; }
+  .info { color: #888; font-size: 13px; margin-bottom: 12px; }
+</style></head>
+<body><div class="login"><h2>${title}</h2>
+${isSetup ? '<div class="info">First time setup — choose a password for the admin dashboard.</div>' : ''}
+${error ? '<div class="error">' + error + '</div>' : ''}
+<form method="POST" action="/login"><input type="password" name="password" placeholder="${placeholder}" autofocus><button type="submit">${buttonText}</button></form>
+</div></body></html>`;
   }
 
   getDashboardHTML() {
@@ -314,6 +443,12 @@ class WebServer {
     .chat-user { font-weight: 700; color: #a78bfa; }
     .chat-text { color: #ccc; }
     .chat-host { color: #f59e0b; }
+    .giveaway-list { list-style: none; padding: 0; margin: 0; }
+    .giveaway-list li { padding: 4px 0; border-bottom: 1px solid #222; color: #ccc; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+    .giveaway-list li:last-child { border-bottom: none; }
+    .giveaway-list li .remove-btn { background: none; border: none; color: #666; cursor: pointer; font-size: 16px; padding: 0 4px; margin: 0; }
+    .giveaway-list li .remove-btn:hover { color: #ef4444; }
+    .giveaway-count { color: #888; font-size: 13px; margin-bottom: 8px; }
   </style>
 </head>
 <body>
@@ -358,6 +493,17 @@ class WebServer {
     <div class="add-form">
       <input type="text" id="newTimedMsg" placeholder="New timed message...">
       <button onclick="addTimedMsg()">Add</button>
+    </div>
+  </div>
+
+  <h2>Giveaway Entries</h2>
+  <div id="giveawaySection" class="card">
+    <div id="giveawayList"></div>
+    <div class="add-form" style="margin-top:8px;">
+      <input type="text" id="newGiveawayName" placeholder="Add name manually...">
+      <button onclick="addGiveawayEntry()">Add</button>
+      <button class="secondary" onclick="copyGiveaway()">Copy for Wheel</button>
+      <button class="danger" onclick="clearGiveaway()">Clear All</button>
     </div>
   </div>
 
@@ -447,6 +593,9 @@ class WebServer {
           return '<span class="guess-chip">' + g.username + ': ' + g.guess + '%</span>';
         }).join('');
       }
+
+      // Giveaway
+      loadGiveaway();
     }
 
     async function nextSong() { await api('/queue/next', 'POST'); refresh(); }
@@ -501,6 +650,52 @@ class WebServer {
 
     async function toggleTimedMsg(id, enabled) { await api('/timed-messages/' + id, 'PUT', { enabled: enabled }); loadTimedMessages(); }
     async function deleteTimedMsg(id) { await api('/timed-messages/' + id, 'DELETE'); loadTimedMessages(); }
+
+    async function loadGiveaway() {
+      var data = await api('/giveaway');
+      lastGiveawayData = data;
+      var el = document.getElementById('giveawayList');
+      if (!data.entries || data.entries.length === 0) {
+        el.innerHTML = '<div class="empty">No entries today</div>';
+        return;
+      }
+      var sorted = data.entries.slice().sort(function(a, b) { return a.username.toLowerCase().localeCompare(b.username.toLowerCase()); });
+      var totalEntries = sorted.reduce(function(sum, e) { return sum + e.entries; }, 0);
+      el.innerHTML = '<div class="giveaway-count">' + totalEntries + ' entries (' + sorted.length + ' people) — ' + data.dayKey + '</div>' +
+        '<ul class="giveaway-list">' + sorted.map(function(e) {
+          var countLabel = e.entries > 1 ? ' (' + e.entries + 'x)' : '';
+          return '<li><span>' + e.username + countLabel + '</span><button class="remove-btn" onclick="removeGiveawayEntry(' + e.id + ')">&times;</button></li>';
+        }).join('') + '</ul>';
+    }
+
+    async function addGiveawayEntry() {
+      var input = document.getElementById('newGiveawayName');
+      if (!input.value.trim()) return;
+      await api('/giveaway', 'POST', { username: input.value.trim() });
+      input.value = '';
+      loadGiveaway();
+    }
+
+    async function removeGiveawayEntry(id) { await api('/giveaway/' + id, 'DELETE'); loadGiveaway(); }
+    async function clearGiveaway() { if (confirm('Clear all giveaway entries?')) { await api('/giveaway/clear', 'POST'); loadGiveaway(); } }
+
+    var lastGiveawayData = null;
+    var origLoadGiveaway = loadGiveaway;
+
+    async function copyGiveaway() {
+      var data = lastGiveawayData || await api('/giveaway');
+      if (!data.entries || data.entries.length === 0) return;
+      var names = [];
+      data.entries.forEach(function(e) {
+        for (var i = 0; i < e.entries; i++) names.push(e.username);
+      });
+      names.sort(function(a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
+      navigator.clipboard.writeText(names.join('\\n')).then(function() {
+        var btn = document.querySelector('button[onclick="copyGiveaway()"]');
+        btn.textContent = 'Copied!';
+        setTimeout(function() { btn.textContent = 'Copy for Wheel'; }, 2000);
+      });
+    }
 
     async function openDownloadModal(artist, title) {
       var modal = document.getElementById('dlModal');
@@ -564,6 +759,7 @@ class WebServer {
     refresh();
     loadChat();
     loadTimedMessages();
+    loadGiveaway();
   </script>
 </body>
 </html>`;

@@ -1,7 +1,8 @@
 require('dotenv').config();
 
-const BlazeAPI = require('./BlazeAPI.js');
-const BlazeWebSocket = require('./BlazeWebSocket.js');
+const BlazeTokenManager = require('./BlazeTokenManager.js');
+const BlazeChatAPI = require('./BlazeChatAPI.js');
+const BlazeChatPoller = require('./BlazeChatPoller.js');
 const ArenaChat = require('./ArenaChat.js');
 const ChatManager = require('./ChatManager.js');
 const SongDatabase = require('./Database.js');
@@ -12,25 +13,26 @@ const WebServer = require('./WebServer.js');
 const TimedMessages = require('./TimedMessages.js');
 
 // --- Validate env ---
-const blazeConfig = {
-  authToken: process.env.BLAZE_AUTH_TOKEN,
-  visitorId: process.env.BLAZE_VISITOR_ID,
-  channelId: process.env.BLAZE_CHANNEL_ID,
-};
-
-if (!blazeConfig.authToken || blazeConfig.authToken === 'your_auth_token_here') {
-  console.error('Please set your Blaze credentials in .env (see .env.example)');
-  process.exit(1);
-}
-
 const streamerUsername = process.env.STREAMER_USERNAME;
 if (!streamerUsername) {
   console.error('Please set STREAMER_USERNAME in .env');
   process.exit(1);
 }
 
-const targetChannelId = process.env.BIDLO_PERV_CHANNEL_ID || blazeConfig.channelId;
+const targetChannelId = process.env.BIDLO_PERV_CHANNEL_ID || process.env.BLAZE_CHANNEL_ID;
 const webPort = parseInt(process.env.WEB_PORT) || 3000;
+
+// --- Blaze Token Manager ---
+const blazeClientId = process.env.BLAZE_CLIENT_ID || '';
+const blazeClientSecret = process.env.BLAZE_CLIENT_SECRET || '';
+const tokenManager = new BlazeTokenManager(blazeClientId, blazeClientSecret);
+
+if (process.env.BLAZE_BOT_ACCESS_TOKEN) {
+  tokenManager.addToken('bot', process.env.BLAZE_BOT_ACCESS_TOKEN, process.env.BLAZE_BOT_REFRESH_TOKEN);
+}
+if (process.env.BLAZE_STREAMER_ACCESS_TOKEN) {
+  tokenManager.addToken('streamer', process.env.BLAZE_STREAMER_ACCESS_TOKEN, process.env.BLAZE_STREAMER_REFRESH_TOKEN);
+}
 
 // --- Initialize ---
 const db = new SongDatabase();
@@ -38,24 +40,22 @@ const rsChannel = process.env.RSPLAYLIST_CHANNEL || '';
 const rs = new RSPlaylist(rsChannel);
 const chatManager = new ChatManager();
 
-// Blaze
-const blazeAPI = new BlazeAPI(blazeConfig);
-const blazeWS = new BlazeWebSocket({ ...blazeConfig, targetChannelId }, blazeAPI);
+// Blaze — official API for both sending and receiving chat
+const blazeChatAPI = new BlazeChatAPI(tokenManager, blazeClientId, targetChannelId);
+const blazeChatPoller = new BlazeChatPoller(tokenManager, blazeClientId, targetChannelId);
 
 // Arena
 const arenaToken = process.env.ARENA_BEARER_TOKEN;
 const arenaHandle = process.env.ARENA_STREAMER_HANDLE;
 const arenaChat = (arenaToken && arenaHandle) ? new ArenaChat(arenaToken, arenaHandle) : null;
 
-// Blaze send function
-const sendBlaze = (channelId, message) => blazeWS.sendChatMessage(channelId, message);
+// Send functions
+const sendBlaze = (channelId, message) => blazeChatAPI.sendMessage(channelId, message);
 
-// Subscriber service for giveaway entries (uses Blaze developer API)
-const blazeClientId = process.env.BLAZE_CLIENT_ID || '';
-const blazeClientSecret = process.env.BLAZE_CLIENT_SECRET || '';
-const subscriberService = new SubscriberService(blazeClientId, blazeClientSecret, targetChannelId);
+// Subscriber service using streamer's token
+const subscriberService = new SubscriberService(tokenManager, blazeClientId, targetChannelId);
 
-// Command handler — responds on whichever platform the command came from
+// Command handler
 const commandHandler = new CommandHandler(db, rs, null, streamerUsername, subscriberService);
 
 const timedSenders = [
@@ -69,9 +69,9 @@ const webServer = new WebServer(db, timedMessages, rs, chatManager, webPort);
 
 // --- Chat handlers ---
 
-// Blaze chat
-blazeWS.on('chatMessage', (data) => {
-  if (!data.text || !data.channelId) return;
+// Blaze chat (via official API polling)
+blazeChatPoller.on('chatMessage', (data) => {
+  if (!data.text) return;
   console.log(`[Blaze Chat] ${data.username}: ${data.text}`);
 
   chatManager.addMessage({
@@ -81,9 +81,8 @@ blazeWS.on('chatMessage', (data) => {
     text: data.text,
   });
 
-  // Set reply function to Blaze
   commandHandler.sendMessage = (chId, msg) => sendBlaze(chId, msg);
-  commandHandler.handle(data.username, data.userId || data.userChannelId, data.text, data.channelId);
+  commandHandler.handle(data.username, data.userId || data.userChannelId, data.text, targetChannelId);
 });
 
 // Arena chat
@@ -92,54 +91,10 @@ if (arenaChat) {
     console.log(`[Arena Chat] ${data.username}: ${data.text}`);
     chatManager.addMessage(data);
 
-    // Set reply function to Arena
     commandHandler.sendMessage = (chId, msg) => arenaChat.sendMessage(msg);
     commandHandler.handle(data.username, data.userId, data.text, 'arena');
   });
 }
-
-// --- Reconnection ---
-let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 10;
-const RECONNECT_DELAY_MS = 5000;
-let isReconnecting = false;
-
-async function attemptReconnect() {
-  if (isReconnecting) return;
-  isReconnecting = true;
-
-  while (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-    reconnectAttempts++;
-    const delay = RECONNECT_DELAY_MS * reconnectAttempts;
-    console.log(`Reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${delay / 1000}s...`);
-    await new Promise((resolve) => setTimeout(resolve, delay));
-
-    try {
-      await blazeWS.connect();
-      reconnectAttempts = 0;
-      isReconnecting = false;
-      console.log('Reconnected successfully');
-      return;
-    } catch (error) {
-      console.error(`Reconnect attempt ${reconnectAttempts} failed:`, error.message);
-    }
-  }
-
-  isReconnecting = false;
-  console.error(`Failed to reconnect after ${MAX_RECONNECT_ATTEMPTS} attempts`);
-}
-
-// --- Events ---
-blazeWS.on('connected', () => {
-  console.log('Blaze connected - bot ready');
-  timedMessages.start();
-});
-
-blazeWS.on('disconnected', (reason) => {
-  console.log('Blaze disconnected:', reason);
-  timedMessages.stop();
-  attemptReconnect();
-});
 
 // --- Start ---
 async function main() {
@@ -149,43 +104,55 @@ async function main() {
   console.log(`Database: ${stats.artists} artists, ${stats.titles} titles cached`);
   console.log('Song search: RS Playlist API (no auth required)');
 
+  // Refresh OAuth tokens on startup
+  if (process.env.BLAZE_BOT_ACCESS_TOKEN) {
+    await tokenManager.refresh('bot');
+  }
+  if (process.env.BLAZE_STREAMER_ACCESS_TOKEN) {
+    await tokenManager.refresh('streamer');
+  }
+
   if (rsChannel) {
     await rs.loadOwnedSongs();
   }
 
-  // Clean up old giveaway entries on startup
+  // Clean up old giveaway entries
   db.clearOldGiveawayEntries();
 
-  // Schedule weekly giveaway reset at midnight UTC Monday
-  function scheduleWeeklyReset() {
+  // Load subscriber list and add daily base entries
+  await subscriberService.refresh();
+  async function addDailySubscriberEntries() {
+    const subs = Array.from(subscriberService.subscribers.values());
+    if (subs.length > 0) {
+      db.addSubscriberBaseEntries(subs);
+      console.log(`Giveaway: added base entries for ${subs.length} subscribers`);
+    }
+  }
+  await addDailySubscriberEntries();
+
+  // Schedule daily reset at midnight UTC
+  function scheduleDailyReset() {
     const now = new Date();
-    const nextMonday = new Date(now);
-    const daysUntilMonday = (8 - now.getUTCDay()) % 7 || 7;
-    nextMonday.setUTCDate(now.getUTCDate() + daysUntilMonday);
-    nextMonday.setUTCHours(0, 0, 0, 0);
-    const msUntilReset = nextMonday.getTime() - now.getTime();
-    console.log(`Giveaway resets in ${Math.round(msUntilReset / 3600000)}h (Monday 00:00 UTC)`);
-    setTimeout(() => {
-      console.log('Giveaway: weekly reset');
+    const tomorrow = new Date(now);
+    tomorrow.setUTCDate(now.getUTCDate() + 1);
+    tomorrow.setUTCHours(0, 0, 0, 0);
+    const msUntilReset = tomorrow.getTime() - now.getTime();
+    console.log(`Giveaway resets in ${Math.round(msUntilReset / 3600000)}h (midnight UTC)`);
+    setTimeout(async () => {
+      console.log('Giveaway: daily reset');
       db.clearOldGiveawayEntries();
-      scheduleWeeklyReset();
+      await subscriberService.refresh();
+      await addDailySubscriberEntries();
+      scheduleDailyReset();
     }, msUntilReset);
   }
-  scheduleWeeklyReset();
-
-  // Load subscriber list
-  await subscriberService.refresh();
+  scheduleDailyReset();
 
   webServer.start();
 
-  // Connect Blaze
-  try {
-    await blazeWS.connect();
-    console.log(`Connected to Blaze — streamer: ${streamerUsername}`);
-  } catch (error) {
-    console.error('Blaze connection failed:', error.message);
-    attemptReconnect();
-  }
+  // Start Blaze chat polling
+  blazeChatPoller.start();
+  console.log(`Blaze: listening to channel ${targetChannelId}`);
 
   // Connect Arena
   if (arenaChat) {
@@ -208,7 +175,7 @@ async function main() {
 function shutdown() {
   console.log('\nShutting down...');
   timedMessages.stop();
-  blazeWS.disconnect();
+  blazeChatPoller.stop();
   if (arenaChat) arenaChat.disconnect();
   webServer.stop();
   db.close();

@@ -62,10 +62,27 @@ class SongDatabase {
         is_subscriber INTEGER NOT NULL DEFAULT 0,
         entries INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-        week_start TEXT NOT NULL,
-        UNIQUE(username, week_start)
+        day_key TEXT NOT NULL,
+        UNIQUE(username, day_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS admin_auth (
+        id INTEGER PRIMARY KEY,
+        password_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS admin_sessions (
+        token TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+        expires_at INTEGER NOT NULL
       );
     `);
+
+    // Migrate giveaway_entries: rename week_start to day_key
+    try {
+      this.db.exec(`ALTER TABLE giveaway_entries RENAME COLUMN week_start TO day_key`);
+    } catch {}
 
     // Migrate existing queue table to add new columns
     const migrateCols = ['cdlc_id INTEGER', 'paths_string TEXT', 'tuning_name TEXT', 'album TEXT', 'creator TEXT', 'downloads INTEGER'];
@@ -92,21 +109,17 @@ class SongDatabase {
       clearAllGuesses: this.db.prepare(`DELETE FROM accuracy_guesses`),
       artistCount: this.db.prepare(`SELECT COUNT(*) as count FROM artists`),
       titleCount: this.db.prepare(`SELECT COUNT(*) as count FROM titles`),
-      addGiveawayEntry: this.db.prepare(`INSERT INTO giveaway_entries (username, user_id, is_subscriber, entries, week_start) VALUES (?, ?, ?, ?, ?) ON CONFLICT(username, week_start) DO UPDATE SET is_subscriber = excluded.is_subscriber, entries = giveaway_entries.entries`),
-      getGiveawayEntries: this.db.prepare(`SELECT * FROM giveaway_entries WHERE week_start = ? ORDER BY created_at ASC`),
-      clearGiveawayEntries: this.db.prepare(`DELETE FROM giveaway_entries WHERE week_start = ?`),
+      addGiveawayEntry: this.db.prepare(`INSERT INTO giveaway_entries (username, user_id, is_subscriber, entries, day_key) VALUES (?, ?, ?, ?, ?) ON CONFLICT(username, day_key) DO UPDATE SET entries = MAX(giveaway_entries.entries, excluded.entries), is_subscriber = MAX(giveaway_entries.is_subscriber, excluded.is_subscriber)`),
+      forceAddGiveawayEntry: this.db.prepare(`INSERT INTO giveaway_entries (username, user_id, is_subscriber, entries, day_key) VALUES (?, ?, ?, ?, ?) ON CONFLICT(username, day_key) DO UPDATE SET entries = giveaway_entries.entries + 1`),
+      removeGiveawayEntry: this.db.prepare(`DELETE FROM giveaway_entries WHERE id = ?`),
+      getGiveawayEntries: this.db.prepare(`SELECT * FROM giveaway_entries WHERE day_key = ? ORDER BY username COLLATE NOCASE ASC`),
+      clearGiveawayEntries: this.db.prepare(`DELETE FROM giveaway_entries WHERE day_key = ?`),
       clearAllGiveawayEntries: this.db.prepare(`DELETE FROM giveaway_entries`),
     };
   }
 
-  static getCurrentWeekStart() {
-    const now = new Date();
-    const day = now.getUTCDay();
-    const diff = day === 0 ? 6 : day - 1; // Monday = 0
-    const monday = new Date(now);
-    monday.setUTCDate(now.getUTCDate() - diff);
-    monday.setUTCHours(0, 0, 0, 0);
-    return monday.toISOString().split('T')[0];
+  static getTodayKey() {
+    return new Date().toISOString().split('T')[0];
   }
 
   cacheArtists(results) {
@@ -211,20 +224,68 @@ class SongDatabase {
     return { ...closest, diff: smallestDiff };
   }
 
-  addGiveawayEntry(username, userId, isSubscriber) {
-    const weekStart = SongDatabase.getCurrentWeekStart();
-    const entries = isSubscriber ? 2 : 1;
-    this.stmts.addGiveawayEntry.run(username, userId, isSubscriber ? 1 : 0, entries, weekStart);
+  addGiveawayEntry(username, userId, isSubscriber, extraEntry = false) {
+    const dayKey = SongDatabase.getTodayKey();
+    const normalizedName = username.toLowerCase();
+    const entries = isSubscriber ? (extraEntry ? 2 : 1) : (extraEntry ? 1 : 0);
+    if (entries === 0) return;
+    this.stmts.addGiveawayEntry.run(normalizedName, userId, isSubscriber ? 1 : 0, entries, dayKey);
   }
 
-  getGiveawayEntries(weekStart) {
-    return this.stmts.getGiveawayEntries.all(weekStart || SongDatabase.getCurrentWeekStart());
+  forceAddGiveawayEntry(username) {
+    const dayKey = SongDatabase.getTodayKey();
+    this.stmts.forceAddGiveawayEntry.run(username.toLowerCase(), null, 0, 1, dayKey);
+  }
+
+  removeGiveawayEntry(id) {
+    this.stmts.removeGiveawayEntry.run(id);
+  }
+
+  addSubscriberBaseEntries(subscribers) {
+    const dayKey = SongDatabase.getTodayKey();
+    const tx = this.db.transaction((subs) => {
+      for (const sub of subs) {
+        const name = (sub.username || sub.displayName || '').toLowerCase();
+        if (!name) continue;
+        this.stmts.addGiveawayEntry.run(name, sub.userId || null, 1, 1, dayKey);
+      }
+    });
+    tx(subscribers);
+  }
+
+  getGiveawayEntries(dayKey) {
+    return this.stmts.getGiveawayEntries.all(dayKey || SongDatabase.getTodayKey());
   }
 
   clearOldGiveawayEntries() {
-    const currentWeek = SongDatabase.getCurrentWeekStart();
-    // Delete entries from previous weeks
-    this.db.prepare(`DELETE FROM giveaway_entries WHERE week_start < ?`).run(currentWeek);
+    const today = SongDatabase.getTodayKey();
+    this.db.prepare(`DELETE FROM giveaway_entries WHERE day_key < ?`).run(today);
+  }
+
+  // --- Admin auth ---
+  setAdminPassword(hash) {
+    this.db.prepare(`DELETE FROM admin_auth`).run();
+    this.db.prepare(`INSERT INTO admin_auth (id, password_hash) VALUES (1, ?)`).run(hash);
+  }
+
+  getAdminPasswordHash() {
+    const row = this.db.prepare(`SELECT password_hash FROM admin_auth WHERE id = 1`).get();
+    return row?.password_hash || null;
+  }
+
+  createSession(token, expiresInDays = 100) {
+    const expiresAt = Math.floor(Date.now() / 1000) + expiresInDays * 86400;
+    this.db.prepare(`INSERT OR REPLACE INTO admin_sessions (token, expires_at) VALUES (?, ?)`).run(token, expiresAt);
+  }
+
+  validateSession(token) {
+    if (!token) return false;
+    const row = this.db.prepare(`SELECT * FROM admin_sessions WHERE token = ? AND expires_at > ?`).get(token, Math.floor(Date.now() / 1000));
+    return !!row;
+  }
+
+  cleanExpiredSessions() {
+    this.db.prepare(`DELETE FROM admin_sessions WHERE expires_at < ?`).run(Math.floor(Date.now() / 1000));
   }
 
   getStats() {
