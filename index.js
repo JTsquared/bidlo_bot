@@ -130,14 +130,17 @@ async function main() {
   }
   await addDailySubscriberEntries();
 
-  // Schedule daily reset at midnight UTC
+  // Schedule daily reset at midnight EDT (4:00 AM UTC)
   function scheduleDailyReset() {
     const now = new Date();
     const tomorrow = new Date(now);
-    tomorrow.setUTCDate(now.getUTCDate() + 1);
-    tomorrow.setUTCHours(0, 0, 0, 0);
+    tomorrow.setUTCDate(now.getUTCDate() + (now.getUTCHours() >= 4 ? 1 : 0));
+    tomorrow.setUTCHours(4, 0, 0, 0);
+    if (tomorrow.getTime() <= now.getTime()) {
+      tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    }
     const msUntilReset = tomorrow.getTime() - now.getTime();
-    console.log(`Giveaway resets in ${Math.round(msUntilReset / 3600000)}h (midnight UTC)`);
+    console.log(`Giveaway resets in ${Math.round(msUntilReset / 3600000)}h (midnight EDT / 4am UTC)`);
     setTimeout(async () => {
       console.log('Giveaway: daily reset');
       db.clearOldGiveawayEntries();
