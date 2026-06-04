@@ -10,6 +10,7 @@ class WebServer {
     this.port = port;
     this.server = null;
     this.crypto = require('crypto');
+    this.basePath = process.env.BASE_PATH || '';
   }
 
   start() {
@@ -62,7 +63,7 @@ class WebServer {
 
     // Protected routes — check auth
     if (!this.isAuthenticated(req)) {
-      res.writeHead(302, { Location: '/login' });
+      res.writeHead(302, { Location: this.basePath + '/login' });
       res.end();
       return;
     }
@@ -313,8 +314,8 @@ class WebServer {
       const token = this.crypto.randomBytes(32).toString('hex');
       this.db.createSession(token, 100);
       res.writeHead(302, {
-        Location: '/',
-        'Set-Cookie': `session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=8640000`,
+        Location: this.basePath + '/',
+        'Set-Cookie': `session=${token}; Path=${this.basePath || '/'}; HttpOnly; SameSite=Strict; Max-Age=8640000`,
       });
       res.end();
       console.log('Admin password set');
@@ -327,8 +328,8 @@ class WebServer {
       this.db.createSession(token, 100);
       this.db.cleanExpiredSessions();
       res.writeHead(302, {
-        Location: '/',
-        'Set-Cookie': `session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=8640000`,
+        Location: this.basePath + '/',
+        'Set-Cookie': `session=${token}; Path=${this.basePath || '/'}; HttpOnly; SameSite=Strict; Max-Age=8640000`,
       });
       res.end();
     } else {
@@ -357,7 +358,7 @@ class WebServer {
 <body><div class="login"><h2>${title}</h2>
 ${isSetup ? '<div class="info">First time setup — choose a password for the admin dashboard.</div>' : ''}
 ${error ? '<div class="error">' + error + '</div>' : ''}
-<form method="POST" action="/login"><input type="password" name="password" placeholder="${placeholder}" autofocus><button type="submit">${buttonText}</button></form>
+<form method="POST" action="login"><input type="password" name="password" placeholder="${placeholder}" autofocus><button type="submit">${buttonText}</button></form>
 </div></body></html>`;
   }
 
