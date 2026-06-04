@@ -179,14 +179,17 @@ async function main() {
   blazeChatPoller.start();
   console.log(`Blaze: listening to channel ${targetChannelId}`);
 
-  // Connect Arena
+  // Connect Arena — retry periodically if streamer isn't live yet
   if (arenaChat) {
-    const arenaOk = await arenaChat.connect();
-    if (arenaOk) {
-      console.log('Connected to Arena');
-    } else {
-      console.warn('Arena: connection failed (streamer may not be live)');
+    async function connectArena() {
+      if (arenaChat.isConnected) return;
+      const ok = await arenaChat.connect();
+      if (ok) {
+        console.log('Connected to Arena');
+      }
     }
+    await connectArena();
+    setInterval(connectArena, 120000); // Retry every 2 minutes if not connected
   } else {
     console.log('Arena: not configured (set ARENA_BEARER_TOKEN and ARENA_STREAMER_HANDLE in .env)');
   }
