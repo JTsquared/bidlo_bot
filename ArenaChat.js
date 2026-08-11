@@ -98,8 +98,23 @@ class ArenaChat extends EventEmitter {
           console.error(`Arena: poll failed (${res.status})`);
           this._pollErrorLogged = true;
         }
+        // If we get repeated failures, the stream likely ended — reset so retry loop reconnects
+        this._pollFailCount = (this._pollFailCount || 0) + 1;
+        if (this._pollFailCount >= 5) {
+          console.log('Arena: stream appears to have ended, resetting for reconnect');
+          this.stopPolling();
+          this.isConnected = false;
+          this.livestreamId = null;
+          this._pollFailCount = 0;
+          this._pollErrorLogged = false;
+          this.emit('disconnected', 'stream_ended');
+        }
         return;
       }
+
+      // Reset fail counter on success
+      this._pollFailCount = 0;
+      this._pollErrorLogged = false;
 
       const data = await res.json();
       const messages = data.messages || data || [];

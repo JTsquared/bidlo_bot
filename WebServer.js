@@ -2,7 +2,7 @@ const http = require('http');
 const { getOverlayHTML } = require('./overlay.js');
 
 class WebServer {
-  constructor(db, timedMessages, rsPlaylist, chatManager, port = 3000) {
+  constructor(db, timedMessages, rsPlaylist, chatManager, port = 3000, options = {}) {
     this.db = db;
     this.timedMessages = timedMessages;
     this.rs = rsPlaylist;
@@ -11,6 +11,8 @@ class WebServer {
     this.server = null;
     this.crypto = require('crypto');
     this.basePath = process.env.BASE_PATH || '';
+    this.tokenManager = options.tokenManager || null;
+    this.channelId = options.channelId || '';
   }
 
   start() {
@@ -44,6 +46,16 @@ class WebServer {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(this.getChatOverlayHTML());
       return;
+    }
+
+    // Emote proxy endpoints (public)
+    const emoteChannelMatch = url.pathname.match(/^\/bapi-proxy\/emotes\/channels\/(.+)$/);
+    if (emoteChannelMatch) {
+      return this.proxyEmotes(req, res, `https://blaze.stream/bapi/emotes/channels/${emoteChannelMatch[1]}`);
+    }
+    const emoteTypeMatch = url.pathname.match(/^\/bapi-proxy\/emotes\/(\w+)$/);
+    if (emoteTypeMatch) {
+      return this.proxyEmotes(req, res, `https://blaze.stream/bapi/emotes/${emoteTypeMatch[1]}`);
     }
 
     // Public API endpoints (overlay data, chat)
@@ -438,12 +450,16 @@ ${error ? '<div class="error">' + error + '</div>' : ''}
     .chat-box { height: calc(100vh - 120px); overflow-y: auto; display: flex; flex-direction: column; }
     .chat-msg { padding: 6px 0; border-bottom: 1px solid #1a1a2e; display: flex; gap: 8px; align-items: flex-start; }
     .chat-msg:last-child { border-bottom: none; }
+    .chat-msg .chat-emote { display: inline-block; height: 24px; vertical-align: middle; margin: 0 1px; }
     .chat-platform { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; margin-top: 2px; }
     .chat-platform.blaze { background: #6366f1; color: #fff; }
     .chat-platform.arena { background: #f97316; color: #fff; }
     .chat-user { font-weight: 700; color: #a78bfa; }
     .chat-text { color: #ccc; }
     .chat-host { color: #f59e0b; }
+    .chat-msg.raid-msg { background: linear-gradient(135deg, #92400e, #78350f); border: 1px solid #f59e0b; border-radius: 8px; padding: 10px 14px; margin: 4px 0; flex-direction: column; align-items: flex-start; gap: 2px; }
+    .chat-msg.raid-msg .raid-header { color: #f59e0b; font-weight: 800; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+    .chat-msg.raid-msg .raid-text { color: #fbbf24; font-weight: 700; font-size: 14px; }
     .giveaway-list { list-style: none; padding: 0; margin: 0; }
     .giveaway-list li { padding: 4px 0; border-bottom: 1px solid #222; color: #ccc; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
     .giveaway-list li:last-child { border-bottom: none; }
@@ -736,6 +752,76 @@ ${error ? '<div class="error">' + error + '</div>' : ''}
       if (e.target === this) closeDownloadModal();
     });
 
+    // --- Emote support ---
+    var emoteCache = {};
+    var channelId = '${this.channelId || ''}';
+
+    async function loadEmotes() {
+      try {
+        var res = await fetch(basePath + '/bapi-proxy/emotes/channels/' + channelId);
+        if (res.ok) {
+          var data = await res.json();
+          var list = data.data || [];
+          for (var i = 0; i < list.length; i++) {
+            if (list[i].id && list[i].imageUrl) {
+              emoteCache[list[i].id] = { name: list[i].name, url: list[i].imageUrl };
+            }
+          }
+        }
+      } catch (e) {}
+      try {
+        var res2 = await fetch(basePath + '/bapi-proxy/emotes/blaze');
+        if (res2.ok) {
+          var data2 = await res2.json();
+          var list2 = data2.data || [];
+          for (var j = 0; j < list2.length; j++) {
+            if (list2[j].id && list2[j].imageUrl) {
+              emoteCache[list2[j].id] = { name: list2[j].name, url: list2[j].imageUrl };
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    function renderMessageContent(text, emotes) {
+      var frag = document.createDocumentFragment();
+      if (!text || !text.includes('[emote:')) {
+        frag.appendChild(document.createTextNode(' ' + (text || '')));
+        return frag;
+      }
+      var msgEmoteMap = {};
+      if (emotes && emotes.length > 0) {
+        for (var i = 0; i < emotes.length; i++) {
+          var e = emotes[i];
+          if (e.id && e.imageUrl) {
+            msgEmoteMap[e.id] = { url: e.imageUrl, name: e.name || 'emote' };
+          }
+        }
+      }
+      var parts = (' ' + text).split(/(\\[emote:[a-f0-9-]+\\])/gi);
+      for (var p = 0; p < parts.length; p++) {
+        var part = parts[p];
+        var emoteMatch = part.match(/^\\[emote:([a-f0-9-]+)\\]$/i);
+        if (emoteMatch) {
+          var emoteId = emoteMatch[1];
+          var emote = emoteCache[emoteId] || msgEmoteMap[emoteId];
+          if (emote) {
+            var img = document.createElement('img');
+            img.className = 'chat-emote';
+            img.src = emote.url;
+            img.alt = emote.name;
+            img.title = emote.name;
+            frag.appendChild(img);
+          } else {
+            frag.appendChild(document.createTextNode(part));
+          }
+        } else if (part) {
+          frag.appendChild(document.createTextNode(part));
+        }
+      }
+      return frag;
+    }
+
     var lastChatTimestamp = 0;
     async function loadChat() {
       var data = await api('/chat?since=' + lastChatTimestamp);
@@ -744,10 +830,37 @@ ${error ? '<div class="error">' + error + '</div>' : ''}
         if (lastChatTimestamp === 0) box.innerHTML = '';
         data.messages.forEach(function(m) {
           var div = document.createElement('div');
-          div.className = 'chat-msg';
-          var roleClass = m.role === 'HOST' ? ' chat-host' : '';
-          div.innerHTML = '<span class="chat-platform ' + m.platform + '">' + m.platform.toUpperCase() + '</span>' +
-            '<span><span class="chat-user' + roleClass + '">' + m.username + ':</span> <span class="chat-text">' + m.text + '</span></span>';
+          if (m.type === 'raid') {
+            div.className = 'chat-msg raid-msg';
+            var header = document.createElement('span');
+            header.className = 'raid-header';
+            header.textContent = '\\u26A1 INCOMING RAID';
+            div.appendChild(header);
+            var raidText = document.createElement('span');
+            raidText.className = 'raid-text';
+            var raidMsg = '\\u26A1 ' + m.username + ' is starting a raid';
+            if (m.viewerCount) raidMsg += ' with ' + m.viewerCount + ' viewers';
+            raidMsg += '.';
+            raidText.textContent = raidMsg;
+            div.appendChild(raidText);
+          } else {
+            div.className = 'chat-msg';
+            var roleClass = m.role === 'HOST' ? ' chat-host' : '';
+            var platformSpan = document.createElement('span');
+            platformSpan.className = 'chat-platform ' + m.platform;
+            platformSpan.textContent = m.platform.toUpperCase();
+            div.appendChild(platformSpan);
+            var contentSpan = document.createElement('span');
+            var userSpan = document.createElement('span');
+            userSpan.className = 'chat-user' + roleClass;
+            userSpan.textContent = m.username + ':';
+            contentSpan.appendChild(userSpan);
+            var textSpan = document.createElement('span');
+            textSpan.className = 'chat-text';
+            textSpan.appendChild(renderMessageContent(m.text, m.emotes));
+            contentSpan.appendChild(textSpan);
+            div.appendChild(contentSpan);
+          }
           box.appendChild(div);
           if (m.timestamp > lastChatTimestamp) lastChatTimestamp = m.timestamp;
         });
@@ -758,6 +871,7 @@ ${error ? '<div class="error">' + error + '</div>' : ''}
     setInterval(refresh, 3000);
     setInterval(loadChat, 2000);
     refresh();
+    loadEmotes();
     loadChat();
     loadTimedMessages();
     loadGiveaway();
@@ -784,6 +898,10 @@ ${error ? '<div class="error">' + error + '</div>' : ''}
     .username { font-weight: 700; color: #a78bfa; font-size: 28px; }
     .username.host { color: #f59e0b; }
     .text { color: #fff; font-size: 28px; }
+    .text .chat-emote { display: inline-block; height: 28px; vertical-align: middle; margin: 0 2px; }
+    .chat-msg.raid-msg { background: linear-gradient(135deg, rgba(146,64,14,0.9), rgba(120,53,15,0.9)); border: 2px solid #f59e0b; flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px 22px; }
+    .chat-msg.raid-msg .raid-header { color: #f59e0b; font-weight: 800; font-size: 18px; text-transform: uppercase; letter-spacing: 2px; }
+    .chat-msg.raid-msg .raid-text { color: #fbbf24; font-weight: 700; font-size: 28px; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
   </style>
 </head>
@@ -793,6 +911,68 @@ ${error ? '<div class="error">' + error + '</div>' : ''}
     var basePath = window.location.pathname.replace(/\\/chat-overlay\\/?$/, '');
     var lastTimestamp = 0;
     var MSG_LIFETIME = 30000;
+    var emoteCache = {};
+    var channelId = '${this.channelId || ''}';
+
+    async function loadEmotes() {
+      try {
+        var res = await fetch(basePath + '/bapi-proxy/emotes/channels/' + channelId);
+        if (res.ok) {
+          var data = await res.json();
+          var list = data.data || [];
+          for (var i = 0; i < list.length; i++) {
+            if (list[i].id && list[i].imageUrl) emoteCache[list[i].id] = { name: list[i].name, url: list[i].imageUrl };
+          }
+        }
+      } catch (e) {}
+      try {
+        var res2 = await fetch(basePath + '/bapi-proxy/emotes/blaze');
+        if (res2.ok) {
+          var data2 = await res2.json();
+          var list2 = data2.data || [];
+          for (var j = 0; j < list2.length; j++) {
+            if (list2[j].id && list2[j].imageUrl) emoteCache[list2[j].id] = { name: list2[j].name, url: list2[j].imageUrl };
+          }
+        }
+      } catch (e) {}
+    }
+
+    function renderMessageContent(text, emotes) {
+      var frag = document.createDocumentFragment();
+      if (!text || !text.includes('[emote:')) {
+        frag.appendChild(document.createTextNode(text || ''));
+        return frag;
+      }
+      var msgEmoteMap = {};
+      if (emotes && emotes.length > 0) {
+        for (var i = 0; i < emotes.length; i++) {
+          var e = emotes[i];
+          if (e.id && e.imageUrl) msgEmoteMap[e.id] = { url: e.imageUrl, name: e.name || 'emote' };
+        }
+      }
+      var parts = text.split(/(\\[emote:[a-f0-9-]+\\])/gi);
+      for (var p = 0; p < parts.length; p++) {
+        var part = parts[p];
+        var emoteMatch = part.match(/^\\[emote:([a-f0-9-]+)\\]$/i);
+        if (emoteMatch) {
+          var emoteId = emoteMatch[1];
+          var emote = emoteCache[emoteId] || msgEmoteMap[emoteId];
+          if (emote) {
+            var img = document.createElement('img');
+            img.className = 'chat-emote';
+            img.src = emote.url;
+            img.alt = emote.name;
+            img.title = emote.name;
+            frag.appendChild(img);
+          } else {
+            frag.appendChild(document.createTextNode(part));
+          }
+        } else if (part) {
+          frag.appendChild(document.createTextNode(part));
+        }
+      }
+      return frag;
+    }
 
     async function poll() {
       try {
@@ -803,11 +983,35 @@ ${error ? '<div class="error">' + error + '</div>' : ''}
         (data.messages || []).forEach(function(m) {
           if (m.timestamp > lastTimestamp) lastTimestamp = m.timestamp;
           var div = document.createElement('div');
-          div.className = 'chat-msg';
-          var hostClass = m.role === 'HOST' ? ' host' : '';
-          div.innerHTML = '<span class="platform-badge ' + m.platform + '">' + m.platform + '</span>' +
-            '<span class="username' + hostClass + '">' + m.username + '</span>' +
-            '<span class="text">' + m.text + '</span>';
+          if (m.type === 'raid') {
+            div.className = 'chat-msg raid-msg';
+            var header = document.createElement('span');
+            header.className = 'raid-header';
+            header.textContent = '\\u26A1 INCOMING RAID';
+            div.appendChild(header);
+            var raidText = document.createElement('span');
+            raidText.className = 'raid-text';
+            var raidMsg = '\\u26A1 ' + m.username + ' is starting a raid';
+            if (m.viewerCount) raidMsg += ' with ' + m.viewerCount + ' viewers';
+            raidMsg += '.';
+            raidText.textContent = raidMsg;
+            div.appendChild(raidText);
+          } else {
+            div.className = 'chat-msg';
+            var hostClass = m.role === 'HOST' ? ' host' : '';
+            var badge = document.createElement('span');
+            badge.className = 'platform-badge ' + m.platform;
+            badge.textContent = m.platform;
+            div.appendChild(badge);
+            var uname = document.createElement('span');
+            uname.className = 'username' + hostClass;
+            uname.textContent = m.username;
+            div.appendChild(uname);
+            var textSpan = document.createElement('span');
+            textSpan.className = 'text';
+            textSpan.appendChild(renderMessageContent(m.text, m.emotes));
+            div.appendChild(textSpan);
+          }
           container.appendChild(div);
 
           // Keep only 2 visible messages
@@ -821,11 +1025,32 @@ ${error ? '<div class="error">' + error + '</div>' : ''}
       } catch (e) {}
     }
 
+    loadEmotes();
     setInterval(poll, 2000);
     poll();
   <\/script>
 </body>
 </html>`;
+  }
+
+  async proxyEmotes(req, res, url) {
+    try {
+      const visitorId = process.env.BLAZE_VISITOR_ID || '';
+      const authToken = process.env.BLAZE_AUTH_TOKEN || '';
+      const headers = {
+        Accept: 'application/json',
+        Authorization: `Bearer ${authToken}`,
+        'Visitor-Id': visitorId,
+        Cookie: `visitorId=${visitorId}; token=${authToken}`,
+      };
+      const response = await fetch(url, { headers });
+      const data = await response.json();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data));
+    } catch (error) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: error.message }));
+    }
   }
 
   stop() {

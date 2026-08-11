@@ -11,6 +11,7 @@ const CommandHandler = require('./CommandHandler.js');
 const SubscriberService = require('./SubscriberService.js');
 const WebServer = require('./WebServer.js');
 const TimedMessages = require('./TimedMessages.js');
+const BlazeEventSub = require('./BlazeEventSub.js');
 
 // --- Validate env ---
 const streamerUsername = process.env.STREAMER_USERNAME;
@@ -43,6 +44,7 @@ const chatManager = new ChatManager();
 // Blaze — official API for both sending and receiving chat
 const blazeChatAPI = new BlazeChatAPI(tokenManager, blazeClientId, targetChannelId);
 const blazeChatPoller = new BlazeChatPoller(tokenManager, blazeClientId, targetChannelId);
+const blazeEventSub = new BlazeEventSub(tokenManager, blazeClientId);
 
 // Arena
 const arenaToken = process.env.ARENA_BEARER_TOKEN;
@@ -65,7 +67,10 @@ if (arenaChat) {
   timedSenders.push({ send: (msg) => arenaChat.sendMessage(msg), name: 'arena' });
 }
 const timedMessages = new TimedMessages(timedSenders);
-const webServer = new WebServer(db, timedMessages, rs, chatManager, webPort);
+const webServer = new WebServer(db, timedMessages, rs, chatManager, webPort, {
+  tokenManager,
+  channelId: targetChannelId,
+});
 
 // --- Chat handlers ---
 
@@ -79,6 +84,7 @@ blazeChatPoller.on('chatMessage', (data) => {
     username: data.username,
     userId: data.userId || data.userChannelId,
     text: data.text,
+    emotes: data.emotes || [],
   });
 
   commandHandler.sendMessage = (chId, msg) => sendBlaze(chId, msg);
@@ -95,6 +101,20 @@ if (arenaChat) {
     commandHandler.handle(data.username, data.userId, data.text, 'arena');
   });
 }
+
+// Raid events (via EventSub)
+blazeEventSub.on('raid', (data) => {
+  console.log(`[Raid] ${data.username} is raiding!${data.viewerCount ? ' (' + data.viewerCount + ' viewers)' : ''}`);
+  chatManager.addMessage({
+    platform: 'blaze',
+    username: data.username,
+    userId: data.userId,
+    text: null,
+    avatar: data.avatarUrl,
+    type: 'raid',
+    viewerCount: data.viewerCount,
+  });
+});
 
 // --- Start ---
 async function main() {
@@ -179,6 +199,15 @@ async function main() {
   blazeChatPoller.start();
   console.log(`Blaze: listening to channel ${targetChannelId}`);
 
+  // Start EventSub for raid events
+  const eventSubConnected = await blazeEventSub.connect();
+  if (eventSubConnected) {
+    await blazeEventSub.subscribeChannel(targetChannelId, ['channel.raid']);
+    console.log('EventSub: listening for raids');
+  } else {
+    console.log('EventSub: failed to connect (raids will not be detected)');
+  }
+
   // Connect Arena — retry periodically if streamer isn't live yet
   if (arenaChat) {
     async function connectArena() {
@@ -204,6 +233,7 @@ function shutdown() {
   console.log('\nShutting down...');
   timedMessages.stop();
   blazeChatPoller.stop();
+  blazeEventSub.disconnect();
   if (arenaChat) arenaChat.disconnect();
   webServer.stop();
   db.close();

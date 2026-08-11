@@ -119,7 +119,10 @@ class SongDatabase {
   }
 
   static getTodayKey() {
-    return new Date().toISOString().split('T')[0];
+    // Day rolls over at 4:00 AM UTC (midnight EDT)
+    const now = new Date();
+    const adjusted = new Date(now.getTime() - 4 * 3600000);
+    return adjusted.toISOString().split('T')[0];
   }
 
   cacheArtists(results) {

@@ -16,6 +16,9 @@ class ChatManager extends EventEmitter {
       text: msg.text,
       avatar: msg.avatar || null,
       role: msg.role || null,
+      type: msg.type || 'chat',
+      viewerCount: msg.viewerCount || null,
+      emotes: msg.emotes || [],
       timestamp: msg.timestamp || Date.now(),
     };
 

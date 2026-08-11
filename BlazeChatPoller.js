@@ -92,6 +92,7 @@ class BlazeChatPoller extends EventEmitter {
           messageId: msg.id,
           isSubscriber: msg.sender?.isSubscriber || false,
           sender: msg.sender,
+          emotes: msg.emotes || [],
         });
       }
 
