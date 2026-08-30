@@ -60,10 +60,7 @@ class WebServer {
       return this.proxyEmotes(req, res, `https://blaze.stream/bapi/emotes/${emoteTypeMatch[1]}`);
     }
 
-    // OAuth callbacks (public — redirected here by external OAuth providers)
-    if (url.pathname === '/auth/blaze/callback') {
-      return this.handleBlazeOAuthCallback(req, res, url);
-    }
+    // Twitch OAuth callback (public — redirected here by Twitch)
     if (url.pathname === '/auth/twitch/callback') {
       return this.handleTwitchOAuthCallback(req, res, url);
     }
@@ -90,14 +87,11 @@ class WebServer {
       return;
     }
 
-    // OAuth management (protected — admin must be logged in)
-    if (url.pathname === '/auth') {
+    // Twitch OAuth management (protected — admin must be logged in)
+    if (url.pathname === '/auth/twitch') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(this.getOAuthLandingHTML());
+      res.end(this.getTwitchOAuthHTML());
       return;
-    }
-    if (url.pathname === '/auth/blaze/authorize') {
-      return this.handleBlazeOAuthAuthorize(req, res, url);
     }
     if (url.pathname === '/auth/twitch/authorize') {
       return this.handleTwitchOAuthAuthorize(req, res, url);
@@ -406,97 +400,6 @@ class WebServer {
     }
   }
 
-  // --- Blaze OAuth ---
-
-  async handleBlazeOAuthAuthorize(req, res, url) {
-    if (!this.tokenManager) {
-      res.writeHead(500, { 'Content-Type': 'text/html' });
-      res.end(this.getOAuthResultHTML(false, 'Blaze is not configured'));
-      return;
-    }
-
-    const tokenType = url.searchParams.get('type') || 'bot';
-    const redirectUri = this.getRedirectUri('/auth/blaze/callback');
-    const scopes = ['users.read', 'offline.access', 'channel.moderate', 'users.bot'];
-
-    const authData = await this.tokenManager.generateAuthUrl(redirectUri, scopes);
-    if (!authData || !authData.url) {
-      res.writeHead(500, { 'Content-Type': 'text/html' });
-      res.end(this.getOAuthResultHTML(false, 'Failed to generate Blaze authorization URL'));
-      return;
-    }
-
-    this.pendingOAuth.set(authData.state, {
-      platform: 'blaze',
-      tokenType,
-      codeVerifier: authData.codeVerifier,
-      createdAt: Date.now(),
-    });
-    this.cleanPendingOAuth();
-
-    console.log(`[OAuth] Blaze ${tokenType} authorization started`);
-    res.writeHead(302, { Location: authData.url });
-    res.end();
-  }
-
-  async handleBlazeOAuthCallback(req, res, url) {
-    const code = url.searchParams.get('code');
-    const state = url.searchParams.get('state');
-    const error = url.searchParams.get('error');
-
-    if (error) {
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(this.getOAuthResultHTML(false, `Blaze authorization denied: ${error}`));
-      return;
-    }
-
-    if (!code || !state) {
-      res.writeHead(400, { 'Content-Type': 'text/html' });
-      res.end(this.getOAuthResultHTML(false, 'Missing code or state parameter'));
-      return;
-    }
-
-    const pending = this.pendingOAuth.get(state);
-    if (!pending || pending.platform !== 'blaze') {
-      res.writeHead(400, { 'Content-Type': 'text/html' });
-      res.end(this.getOAuthResultHTML(false, 'Invalid or expired state. Start the authorization flow again from the OAuth page.'));
-      return;
-    }
-    this.pendingOAuth.delete(state);
-
-    if (!this.tokenManager) {
-      res.writeHead(500, { 'Content-Type': 'text/html' });
-      res.end(this.getOAuthResultHTML(false, 'Blaze is not configured'));
-      return;
-    }
-
-    const redirectUri = this.getRedirectUri('/auth/blaze/callback');
-    const tokenData = await this.tokenManager.exchangeCode(code, pending.codeVerifier, redirectUri);
-
-    if (!tokenData) {
-      res.writeHead(500, { 'Content-Type': 'text/html' });
-      res.end(this.getOAuthResultHTML(false, 'Failed to exchange Blaze authorization code'));
-      return;
-    }
-
-    const tokenName = pending.tokenType;
-    this.tokenManager.addToken(tokenName, tokenData.accessToken, tokenData.refreshToken);
-
-    const prefix = tokenName === 'bot' ? 'BLAZE_BOT' : 'BLAZE_STREAMER';
-    const vars = {
-      [`${prefix}_ACCESS_TOKEN`]: tokenData.accessToken,
-      [`${prefix}_REFRESH_TOKEN`]: tokenData.refreshToken,
-    };
-    if (tokenData.userId) {
-      vars[`${prefix}_USER_ID`] = tokenData.userId;
-    }
-    this.updateEnvVars(vars);
-
-    console.log(`[OAuth] Blaze ${tokenName} tokens saved (userId: ${tokenData.userId || 'unknown'})`);
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(this.getOAuthResultHTML(true, `Blaze ${tokenName} token saved! You can close this window.`));
-  }
-
   // --- Twitch OAuth ---
 
   async handleTwitchOAuthAuthorize(req, res, url) {
@@ -611,11 +514,8 @@ class WebServer {
 <body><div class="card"><div class="icon">${icon}</div><div class="msg">${message}</div></div></body></html>`;
   }
 
-  getOAuthLandingHTML() {
-    const blazeConfigured = !!this.tokenManager;
+  getTwitchOAuthHTML() {
     const twitchConfigured = !!this.twitchTokenManager;
-    const blazeBotToken = !!process.env.BLAZE_BOT_ACCESS_TOKEN;
-    const blazeStreamerToken = !!process.env.BLAZE_STREAMER_ACCESS_TOKEN;
     const twitchBotToken = !!process.env.TWITCH_BOT_ACCESS_TOKEN;
     const twitchStreamerToken = !!process.env.TWITCH_STREAMER_ACCESS_TOKEN;
 
@@ -624,18 +524,15 @@ class WebServer {
       : '<span style="color:#666;font-size:12px;">&#9679; Not connected</span>';
 
     return `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Bidlo Bot - OAuth Setup</title>
+<html><head><meta charset="UTF-8"><title>Bidlo Bot - Twitch OAuth</title>
 <style>
   body { font-family: -apple-system, sans-serif; background: #0f0f0f; color: #e0e0e0; display: flex; justify-content: center; align-items: flex-start; padding: 40px 20px; margin: 0; }
   .container { max-width: 600px; width: 100%; }
-  h1 { color: #a78bfa; margin-bottom: 8px; }
+  h1 { color: #9146ff; margin-bottom: 8px; }
   .subtitle { color: #888; margin-bottom: 24px; }
   .back { color: #6366f1; text-decoration: none; font-size: 14px; }
   .back:hover { text-decoration: underline; }
   .platform { background: #1a1a2e; border: 1px solid #333; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
-  .platform h2 { margin: 0 0 16px; font-size: 18px; }
-  .platform h2.blaze { color: #6366f1; }
-  .platform h2.twitch { color: #9146ff; }
   .token-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #222; }
   .token-row:last-child { border-bottom: none; }
   .token-info { flex: 1; }
@@ -643,8 +540,6 @@ class WebServer {
   .token-desc { color: #888; font-size: 13px; margin-top: 2px; }
   .token-status { margin: 0 16px; }
   a.btn { display: inline-block; padding: 8px 20px; border-radius: 8px; color: #fff; text-decoration: none; font-size: 14px; font-weight: 600; }
-  a.btn.blaze { background: #6366f1; }
-  a.btn.blaze:hover { background: #5558e6; }
   a.btn.twitch { background: #9146ff; }
   a.btn.twitch:hover { background: #7c3aed; }
   a.btn.disabled { background: #333; color: #666; pointer-events: none; }
@@ -653,32 +548,10 @@ class WebServer {
 <body>
 <div class="container">
   <a href="/" class="back">&larr; Dashboard</a>
-  <h1>OAuth Setup</h1>
-  <p class="subtitle">Authorize bot and streamer accounts for each platform.</p>
+  <h1>Twitch OAuth Setup</h1>
+  <p class="subtitle">Authorize bot and streamer accounts for Twitch.</p>
 
   <div class="platform">
-    <h2 class="blaze">Blaze</h2>
-    <div class="token-row">
-      <div class="token-info">
-        <div class="token-label">Bot Account</div>
-        <div class="token-desc">Sends chat messages as the bot</div>
-      </div>
-      <div class="token-status">${statusDot(blazeBotToken)}</div>
-      <a href="/auth/blaze/authorize?type=bot" class="btn ${blazeConfigured ? 'blaze' : 'disabled'}">${blazeBotToken ? 'Re-authorize' : 'Authorize'}</a>
-    </div>
-    <div class="token-row">
-      <div class="token-info">
-        <div class="token-label">Streamer Account</div>
-        <div class="token-desc">Access subscriber list, channel info</div>
-      </div>
-      <div class="token-status">${statusDot(blazeStreamerToken)}</div>
-      <a href="/auth/blaze/authorize?type=streamer" class="btn ${blazeConfigured ? 'blaze' : 'disabled'}">${blazeStreamerToken ? 'Re-authorize' : 'Authorize'}</a>
-    </div>
-    ${!blazeConfigured ? '<div class="note">Set BLAZE_CLIENT_ID and BLAZE_CLIENT_SECRET in .env to enable.</div>' : ''}
-  </div>
-
-  <div class="platform">
-    <h2 class="twitch">Twitch</h2>
     <div class="token-row">
       <div class="token-info">
         <div class="token-label">Bot Account</div>
@@ -822,7 +695,7 @@ ${error ? '<div class="error">' + error + '</div>' : ''}
 </head>
 <body>
   <h1>Bidlo Bot</h1>
-  <div style="margin-bottom:16px;"><a href="/auth" style="color:#6366f1;text-decoration:none;font-size:14px;">OAuth Setup &rarr;</a></div>
+  <div style="margin-bottom:16px;"><a href="/auth/twitch" style="color:#9146ff;text-decoration:none;font-size:14px;">Twitch OAuth Setup &rarr;</a></div>
   <div class="page-layout">
     <div class="left-col">
 
