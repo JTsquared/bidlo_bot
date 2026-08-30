@@ -12,6 +12,9 @@ const SubscriberService = require('./SubscriberService.js');
 const WebServer = require('./WebServer.js');
 const TimedMessages = require('./TimedMessages.js');
 const BlazeEventSub = require('./BlazeEventSub.js');
+const TwitchTokenManager = require('./TwitchTokenManager.js');
+const TwitchChat = require('./TwitchChat.js');
+const TwitchEventSub = require('./TwitchEventSub.js');
 
 // --- Validate env ---
 const streamerUsername = process.env.STREAMER_USERNAME;
@@ -51,6 +54,25 @@ const arenaToken = process.env.ARENA_BEARER_TOKEN;
 const arenaHandle = process.env.ARENA_STREAMER_HANDLE;
 const arenaChat = (arenaToken && arenaHandle) ? new ArenaChat(arenaToken, arenaHandle) : null;
 
+// --- Twitch Token Manager ---
+const twitchClientId = process.env.TWITCH_CLIENT_ID || '';
+const twitchClientSecret = process.env.TWITCH_CLIENT_SECRET || '';
+const twitchTokenManager = (twitchClientId && twitchClientSecret)
+  ? new TwitchTokenManager(twitchClientId, twitchClientSecret) : null;
+
+if (twitchTokenManager && process.env.TWITCH_BOT_ACCESS_TOKEN) {
+  twitchTokenManager.addToken('bot', process.env.TWITCH_BOT_ACCESS_TOKEN, process.env.TWITCH_BOT_REFRESH_TOKEN);
+}
+if (twitchTokenManager && process.env.TWITCH_STREAMER_ACCESS_TOKEN) {
+  twitchTokenManager.addToken('streamer', process.env.TWITCH_STREAMER_ACCESS_TOKEN, process.env.TWITCH_STREAMER_REFRESH_TOKEN);
+}
+
+// Twitch chat and events
+const twitchChannel = process.env.TWITCH_CHANNEL || '';
+const twitchChat = (twitchTokenManager && twitchChannel && process.env.TWITCH_BOT_ACCESS_TOKEN)
+  ? new TwitchChat(twitchTokenManager, twitchChannel) : null;
+const twitchEventSub = twitchTokenManager ? new TwitchEventSub(twitchTokenManager) : null;
+
 // Send functions
 const sendBlaze = (channelId, message) => blazeChatAPI.sendMessage(channelId, message);
 
@@ -66,10 +88,14 @@ const timedSenders = [
 if (arenaChat) {
   timedSenders.push({ send: (msg) => arenaChat.sendMessage(msg), name: 'arena' });
 }
+if (twitchChat) {
+  timedSenders.push({ send: (msg) => twitchChat.sendMessage(msg), name: 'twitch' });
+}
 const timedMessages = new TimedMessages(timedSenders);
 const webServer = new WebServer(db, timedMessages, rs, chatManager, webPort, {
   tokenManager,
   channelId: targetChannelId,
+  twitchTokenManager,
 });
 
 // --- Chat handlers ---
@@ -99,6 +125,52 @@ if (arenaChat) {
 
     commandHandler.sendMessage = (chId, msg) => arenaChat.sendMessage(msg);
     commandHandler.handle(data.username, data.userId, data.text, 'arena');
+  });
+}
+
+// Twitch chat
+if (twitchChat) {
+  twitchChat.on('chatMessage', (data) => {
+    if (!data.text) return;
+    console.log(`[Twitch Chat] ${data.username}: ${data.text}`);
+
+    chatManager.addMessage({
+      platform: 'twitch',
+      username: data.username,
+      userId: data.userId,
+      text: data.text,
+      emotes: [],
+    });
+
+    commandHandler.sendMessage = (chId, msg) => twitchChat.sendMessage(msg);
+    commandHandler.handle(data.username, data.userId, data.text, 'twitch');
+  });
+
+  twitchChat.on('raid', (data) => {
+    console.log(`[Twitch Raid] ${data.username} is raiding!${data.viewerCount ? ' (' + data.viewerCount + ' viewers)' : ''}`);
+    chatManager.addMessage({
+      platform: 'twitch',
+      username: data.username,
+      userId: data.userId,
+      text: null,
+      type: 'raid',
+      viewerCount: data.viewerCount,
+    });
+  });
+}
+
+// Twitch EventSub raid events
+if (twitchEventSub) {
+  twitchEventSub.on('raid', (data) => {
+    console.log(`[Twitch EventSub Raid] ${data.username} is raiding!${data.viewerCount ? ' (' + data.viewerCount + ' viewers)' : ''}`);
+    chatManager.addMessage({
+      platform: 'twitch',
+      username: data.username,
+      userId: data.userId,
+      text: null,
+      type: 'raid',
+      viewerCount: data.viewerCount,
+    });
   });
 }
 
@@ -223,6 +295,38 @@ async function main() {
     console.log('Arena: not configured (set ARENA_BEARER_TOKEN and ARENA_STREAMER_HANDLE in .env)');
   }
 
+  // Connect Twitch
+  if (twitchTokenManager && process.env.TWITCH_BOT_ACCESS_TOKEN) {
+    await twitchTokenManager.refresh('bot');
+    if (process.env.TWITCH_STREAMER_ACCESS_TOKEN) {
+      await twitchTokenManager.refresh('streamer');
+    }
+  }
+
+  if (twitchChat) {
+    const twitchConnected = await twitchChat.connect();
+    if (twitchConnected) {
+      console.log(`Twitch: connected to #${twitchChannel}`);
+    } else {
+      console.log('Twitch: failed to connect chat');
+    }
+  } else if (twitchTokenManager) {
+    console.log('Twitch: OAuth configured but no bot token or channel set (set TWITCH_BOT_ACCESS_TOKEN and TWITCH_CHANNEL in .env)');
+  } else {
+    console.log('Twitch: not configured (set TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET in .env)');
+  }
+
+  // Twitch EventSub for raids
+  if (twitchEventSub && process.env.TWITCH_STREAMER_USER_ID) {
+    const twitchEsConnected = await twitchEventSub.connect();
+    if (twitchEsConnected) {
+      await twitchEventSub.subscribeChannel(process.env.TWITCH_STREAMER_USER_ID);
+      console.log('Twitch EventSub: listening for raids');
+    } else {
+      console.log('Twitch EventSub: failed to connect');
+    }
+  }
+
   console.log(`Web UI: http://localhost:${webPort}`);
   console.log(`OBS Overlay: http://localhost:${webPort}/overlay`);
   console.log(`Chat Overlay: http://localhost:${webPort}/chat-overlay`);
@@ -235,6 +339,8 @@ function shutdown() {
   blazeChatPoller.stop();
   blazeEventSub.disconnect();
   if (arenaChat) arenaChat.disconnect();
+  if (twitchChat) twitchChat.disconnect();
+  if (twitchEventSub) twitchEventSub.disconnect();
   webServer.stop();
   db.close();
   process.exit(0);

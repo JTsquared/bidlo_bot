@@ -3,6 +3,7 @@ const path = require('path');
 
 const TOKEN_URL = 'https://blaze.stream/bapi/oauth2/token';
 const REFRESH_URL = 'https://blaze.stream/bapi/oauth2/refresh';
+const GENERATE_AUTH_URL = 'https://blaze.stream/bapi/oauth2/generate-auth-url';
 const ENV_PATH = path.join(__dirname, '.env');
 
 class BlazeTokenManager {
@@ -131,6 +132,67 @@ class BlazeTokenManager {
       return data.accessToken;
     } catch (error) {
       console.error('BlazeToken: app token error:', error.message);
+      return null;
+    }
+  }
+  /**
+   * Generate an authorization URL with PKCE.
+   * Returns { url, state, codeVerifier } or null on failure.
+   */
+  async generateAuthUrl(redirectUri, scopes) {
+    try {
+      const response = await fetch(GENERATE_AUTH_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: this.clientId,
+          clientSecret: this.clientSecret,
+          redirectUri,
+          scopes,
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.text();
+        console.error(`BlazeToken: generate auth URL failed (${response.status}):`, err.substring(0, 200));
+        return null;
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('BlazeToken: generate auth URL error:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Exchange an authorization code for tokens (PKCE flow).
+   * Returns { accessToken, refreshToken, expiresIn, userId, scopes } or null on failure.
+   */
+  async exchangeCode(code, codeVerifier, redirectUri) {
+    try {
+      const response = await fetch(TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: this.clientId,
+          clientSecret: this.clientSecret,
+          code,
+          codeVerifier,
+          redirectUri,
+          grantType: 'authorization_code',
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.text();
+        console.error(`BlazeToken: code exchange failed (${response.status}):`, err.substring(0, 200));
+        return null;
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('BlazeToken: code exchange error:', error.message);
       return null;
     }
   }
