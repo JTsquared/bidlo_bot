@@ -171,8 +171,8 @@ class CommandHandler {
   }
 
   async addGiveawayEntryIfBlaze(username, userId, channelId) {
-    // Only Blaze users get giveaway entries (channelId !== 'arena')
-    if (channelId === 'arena') return;
+    // Only Blaze users get giveaway entries
+    if (channelId === 'arena' || channelId === 'twitch') return;
     try {
       const isSub = this.subscriberService ? await this.subscriberService.isSubscriber(username) : false;
       this.db.addGiveawayEntry(username, userId, isSub, true); // extraEntry=true for song request
