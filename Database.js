@@ -72,6 +72,11 @@ class SongDatabase {
         created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
       );
 
+      CREATE TABLE IF NOT EXISTS bot_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS admin_sessions (
         token TEXT PRIMARY KEY,
         created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
@@ -123,6 +128,16 @@ class SongDatabase {
     const now = new Date();
     const adjusted = new Date(now.getTime() - 4 * 3600000);
     return adjusted.toISOString().split('T')[0];
+  }
+
+  areSongRequestsEnabled() {
+    const row = this.db.prepare('SELECT value FROM bot_settings WHERE key = ?').get('song_requests_enabled');
+    return row?.value !== 'false';
+  }
+
+  setSongRequestsEnabled(enabled) {
+    this.db.prepare('INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)')
+      .run('song_requests_enabled', String(enabled));
   }
 
   cacheArtists(results) {

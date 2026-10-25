@@ -65,6 +65,7 @@ class CommandHandler {
   }
 
   async handleRequest(username, userId, query, channelId) {
+    if (!this.db.areSongRequestsEnabled()) return this.sendRequestsClosed(username, channelId);
     if (!this.isStreamLive) {
       return this.sendMessage(channelId, `@${username} Song requests are only available when the stream is live!`);
     }
@@ -76,6 +77,8 @@ class CommandHandler {
 
     // Search RS Playlist API
     const searchResult = await this.rs.search(query);
+    // Requests may have closed while the search was in flight.
+    if (!this.db.areSongRequestsEnabled()) return this.sendRequestsClosed(username, channelId);
     results = searchResult.results;
 
     // Deduplicate by artist+title for viewer display
@@ -143,6 +146,10 @@ class CommandHandler {
   }
 
   async handlePick(username, userId, args, channelId) {
+    if (!this.db.areSongRequestsEnabled()) {
+      this.pendingPicks.delete(username.toLowerCase());
+      return this.sendRequestsClosed(username, channelId);
+    }
     const key = username.toLowerCase();
     const pending = this.pendingPicks.get(key);
 
@@ -168,6 +175,10 @@ class CommandHandler {
     await this.addGiveawayEntryIfBlaze(username, userId, channelId);
 
     return this.sendMessage(channelId, `@${username} Added "${display}" to the queue! (Position #${position})`);
+  }
+
+  sendRequestsClosed(username, channelId) {
+    return this.sendMessage(channelId, `@${username} New song requests are no longer being accepted at this time. You can request a song the next time I'm live!`);
   }
 
   async addGiveawayEntryIfBlaze(username, userId, channelId) {

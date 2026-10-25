@@ -130,6 +130,19 @@ class WebServer {
     };
 
     try {
+      // Protected by the admin authentication in handleRequest.
+      if (url.pathname === '/api/song-requests' && req.method === 'GET') {
+        return sendJSON(200, { enabled: this.db.areSongRequestsEnabled() });
+      }
+      if (url.pathname === '/api/song-requests' && req.method === 'PUT') {
+        const { enabled } = await readBody();
+        if (typeof enabled !== 'boolean') {
+          return sendJSON(400, { error: 'Enabled must be a boolean' });
+        }
+        this.db.setSongRequestsEnabled(enabled);
+        return sendJSON(200, { enabled: this.db.areSongRequestsEnabled() });
+      }
+
       // GET /api/queue - get queue state
       if (url.pathname === '/api/queue' && req.method === 'GET') {
         const queue = this.db.getQueue().map((q) => ({ ...q, owned: this.rs.isOwned(q.artist, q.title) }));
@@ -739,6 +752,13 @@ ${error ? '<div class="error">' + error + '</div>' : ''}
     </div>
   </div>
 
+  <h2>Song Requests</h2>
+  <div class="card">
+    <p id="songRequestsStatus" role="status" aria-live="polite">Loading request status...</p>
+    <button id="songRequestsToggle" onclick="toggleSongRequests()" disabled>Loading...</button>
+    <p style="color:#888;font-size:13px;margin-top:8px;">Closing requests keeps the existing queue. Reopen requests here for your next stream.</p>
+  </div>
+
   <h2>Giveaway Entries</h2>
   <div id="giveawaySection" class="card">
     <div id="giveawayList"></div>
@@ -788,7 +808,43 @@ ${error ? '<div class="error">' + error + '</div>' : ''}
       return res.json();
     }
 
+    var songRequestsEnabled = true;
+    var savingSongRequests = false;
+    function renderSongRequests(data) {
+      songRequestsEnabled = data.enabled;
+      document.getElementById('songRequestsStatus').textContent = data.enabled ? 'Song requests are open' : 'Song requests are closed';
+      var button = document.getElementById('songRequestsToggle');
+      button.textContent = data.enabled ? 'Disable Song Requests' : 'Enable Song Requests';
+      button.className = data.enabled ? 'danger' : '';
+      button.disabled = savingSongRequests;
+    }
+    async function loadSongRequests() {
+      if (savingSongRequests) return;
+      try {
+        var data = await api('/song-requests');
+        if (typeof data.enabled !== 'boolean') throw new Error('Unable to load song request status');
+        if (!savingSongRequests) renderSongRequests(data);
+      } catch (err) {
+        document.getElementById('songRequestsStatus').textContent = 'Unable to load song request status. Retrying...';
+      }
+    }
+    async function toggleSongRequests() {
+      savingSongRequests = true;
+      document.getElementById('songRequestsToggle').disabled = true;
+      try {
+        var data = await api('/song-requests', 'PUT', { enabled: !songRequestsEnabled });
+        if (typeof data.enabled !== 'boolean') throw new Error(data.error || 'Unable to save song request status');
+        renderSongRequests(data);
+      } catch (err) {
+        alert('Could not update song requests: ' + err.message);
+      } finally {
+        savingSongRequests = false;
+        document.getElementById('songRequestsToggle').disabled = false;
+      }
+    }
+
     async function refresh() {
+      loadSongRequests();
       const qData = await api('/queue');
       const gData = await api('/guesses');
 
